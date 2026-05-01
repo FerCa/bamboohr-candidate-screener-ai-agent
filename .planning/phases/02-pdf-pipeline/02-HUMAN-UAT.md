@@ -3,7 +3,7 @@ status: diagnosed
 phase: 02-pdf-pipeline
 source: [02-VERIFICATION.md]
 started: 2026-05-01T21:00:00Z
-updated: 2026-05-01T22:45:00Z
+updated: 2026-05-01T23:55:00Z
 ---
 
 ## Current Test
@@ -48,13 +48,14 @@ description: Fallback path had double /v1/ prefix (CR-01) and used applicationId
 resolved_by: 02-05
 
 ### GAP-02: PDF download still 404 after structural fixes — documents list API needed
-status: failed
+status: resolved
+resolved_by: 02-07
 description: Both structurally-correct paths still return 404 for all 6 candidates passing hard rules.
   Attempted: /applicant_tracking/applications/{applicationId}/documents/{resumeFileId}
   Attempted: /employees/{applicantId}/files/{resumeFileId}
   Root cause: resumeFileId from application detail is not a direct download ID recognized by either endpoint.
-  BambooHR likely exposes document download via a two-step process:
-    1. GET /applicant_tracking/applications/{applicationId}/documents — returns document list with download URLs or IDs
-    2. Download using the URL/endpoint from the document object, not the raw resumeFileId
-  Alternatively, the documents may be accessible at a different path not yet tried (e.g. with ?download=true, or requiring Accept: application/octet-stream).
+  Resolution (plan 02-07): Two-step approach implemented — first fetches document list via
+    GET /applicant_tracking/applications/{applicationId}/documents, then extracts actual
+    download URL from the document object (tries url/downloadUrl/download_url/original/href/link/fileUrl/file_url).
+    Full response logged to stderr on all failure paths for shape discovery.
 blocks: SC1, SC2, SC3
