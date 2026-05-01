@@ -106,6 +106,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Executing (verifying) | - |
-| 2. PDF Pipeline | 0/4 | Not started | - |
+| 2. PDF Pipeline | 0/4 | Ready to execute | - |
 | 3. Agent Evaluation | 0/TBD | Not started | - |
 | 4. Live Mode & Deployment | 0/TBD | Not started | - |
