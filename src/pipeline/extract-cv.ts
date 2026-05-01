@@ -52,18 +52,22 @@ export async function buildCandidateContext(
   // --- Step 1: Discover and validate the resume file ID ---
   // ASSUMPTION A1: field is 'resumeFileId' (camelCase). Discovery guard logs keys if absent.
   const rawFileId = detail['resumeFileId'];
-  if (rawFileId === undefined || rawFileId === null || rawFileId === 0) {
+  const resumeFileId =
+    typeof rawFileId === 'number' && Number.isInteger(rawFileId) && rawFileId > 0
+      ? rawFileId
+      : null;
+
+  if (resumeFileId === null) {
     console.error(
-      `[extract-cv] Resume file ID not found at detail['resumeFileId'] for applicationId=${applicationId}. ` +
-      `Value: ${JSON.stringify(rawFileId)}. ` +
+      `[extract-cv] Invalid or missing resumeFileId for applicationId=${applicationId}. ` +
+      `Value: ${JSON.stringify(rawFileId)} (type: ${typeof rawFileId}). ` +
+      `Expected a positive integer. ` +
       `Top-level keys on application detail: ${Object.keys(detail).join(', ')} ` +
       `— if BambooHR uses a different field name (e.g. 'resume_file_id', 'attachments[0].id'), ` +
       `update this file accordingly after the first DRY_RUN.`,
     );
     return makeNeedsReview(applicationId, applicantId, hardRuleResult, applicationAnswers, 'extraction-failed');
   }
-
-  const resumeFileId = rawFileId as number;
 
   // --- Step 2: Download PDF binary (BAMB-04) ---
   // downloadPdf() throws for network/auth errors — those propagate to outer catch (SAFE-01).
@@ -72,7 +76,7 @@ export async function buildCandidateContext(
   let buffer: Buffer;
   let contentType: string;
   try {
-    ({ buffer, contentType } = await client.downloadPdf(applicationId, resumeFileId));
+    ({ buffer, contentType } = await client.downloadPdf(applicationId, applicantId, resumeFileId));
   } catch (downloadErr) {
     const message = downloadErr instanceof Error ? downloadErr.message : String(downloadErr);
     console.error(`[extract-cv] PDF download failed for applicationId=${applicationId}: ${message}`);
