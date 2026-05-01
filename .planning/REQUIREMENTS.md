@@ -84,13 +84,24 @@
 
 ## Traceability
 
-> Filled by roadmapper.
-
-| REQ-ID | Phase |
-|--------|-------|
-| CONF-01 – CONF-04 | — |
-| BAMB-01 – BAMB-04 | — |
-| RULE-01 – RULE-03 | — |
-| PDF-01 – PDF-02 | — |
-| SAFE-01 – SAFE-02 | — |
-| INFRA-01 – INFRA-04 | — |
+| REQ-ID | Phase | Status |
+|--------|-------|--------|
+| CONF-01 | Phase 1 | Pending |
+| CONF-02 | Phase 1 | Pending |
+| CONF-03 | Phase 1 | Pending |
+| CONF-04 | Phase 1 | Pending |
+| BAMB-01 | Phase 1 | Pending |
+| RULE-01 | Phase 1 | Pending |
+| SAFE-01 | Phase 1 | Pending |
+| INFRA-02 | Phase 1 | Pending |
+| BAMB-04 | Phase 2 | Pending |
+| PDF-01 | Phase 2 | Pending |
+| PDF-02 | Phase 2 | Pending |
+| RULE-03 | Phase 2 | Pending |
+| BAMB-02 | Phase 3 | Pending |
+| BAMB-03 | Phase 3 | Pending |
+| RULE-02 | Phase 3 | Pending |
+| SAFE-02 | Phase 3 | Pending |
+| INFRA-01 | Phase 4 | Pending |
+| INFRA-03 | Phase 4 | Pending |
+| INFRA-04 | Phase 4 | Pending |
