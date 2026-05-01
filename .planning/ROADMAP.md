@@ -44,7 +44,7 @@ Plans:
 - [x] 01-04-PLAN.md — Hard-rule evaluator: four rule types, collect-all, fieldMap resolution (RULE-01)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 01-05-PLAN.md — Entry point + logger: startup sequence, error-isolated loop, JSON log output (SAFE-01, INFRA-02)
+- [x] 01-05-PLAN.md — Entry point + logger: startup sequence, error-isolated loop, JSON log output (SAFE-01, INFRA-02)
 
 Cross-cutting constraints: ESM `.js` imports throughout; `DRY_RUN=true` default enforced; `applicationId` (not `applicantId`) used in all entity references; no native npm dependencies (Alpine-compatible stack only).
 
