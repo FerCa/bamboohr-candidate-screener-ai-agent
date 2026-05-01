@@ -47,7 +47,7 @@ Plans:
 - [x] 01-05-PLAN.md — Entry point + logger: startup sequence, error-isolated loop, JSON log output (SAFE-01, INFRA-02)
 
 **Wave 5** *(gap closure — blocked on Wave 4 completion)*
-- [ ] 01-06-PLAN.md — Gap closure: openingId placeholder guard, requiredFields fieldMap fix, LIVE_MODE doc alignment, MAX_PAGES ceiling (CONF-01, CONF-04, RULE-01)
+- [x] 01-06-PLAN.md — Gap closure: openingId placeholder guard, requiredFields fieldMap fix, LIVE_MODE doc alignment, MAX_PAGES ceiling (CONF-01, CONF-04, RULE-01)
 
 Cross-cutting constraints: ESM `.js` imports throughout; `LIVE_MODE=true` required to enable writes (default: dry-run); `applicationId` (not `applicantId`) used in all entity references; no native npm dependencies (Alpine-compatible stack only).
 
@@ -91,7 +91,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/5 | Not started | - |
+| 1. Foundation | 6/6 | Executing (verifying) | - |
 | 2. PDF Pipeline | 0/TBD | Not started | - |
 | 3. Agent Evaluation | 0/TBD | Not started | - |
 | 4. Live Mode & Deployment | 0/TBD | Not started | - |
