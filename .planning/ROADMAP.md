@@ -75,7 +75,7 @@ Plans:
 - [x] 02-04-PLAN.md — Wire PDF pipeline into src/index.ts: pass branch, needsReview counter, summary line extension (BAMB-04, PDF-01, PDF-02, RULE-03)
 
 **Wave 4** *(gap closure — blocked on Wave 3 completion)*
-- [ ] 02-05-PLAN.md — Fix downloadPdf() double-/v1 and wrong entity ID (CR-01, CR-02); validateStages() return type (WR-03 client); rawFileId runtime validation (CR-04) (BAMB-04, RULE-03)
+- [x] 02-05-PLAN.md — Fix downloadPdf() double-/v1 and wrong entity ID (CR-01, CR-02); validateStages() return type (WR-03 client); rawFileId runtime validation (CR-04) (BAMB-04, RULE-03)
 
 **Wave 5** *(gap closure — blocked on Wave 4 completion)*
 - [ ] 02-06-PLAN.md — Add intake stage to schema + config; wire stageMap in index.ts; fix hasPlaceholders; replace PII log (CR-03, WR-01, WR-02, WR-03 index) (BAMB-04, PDF-01, PDF-02, RULE-03)
