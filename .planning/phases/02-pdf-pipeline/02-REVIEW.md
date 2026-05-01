@@ -1,6 +1,6 @@
 ---
 phase: 02-pdf-pipeline
-reviewed: 2026-05-01T12:00:00Z
+reviewed: 2026-05-01T14:00:00Z
 depth: standard
 files_reviewed: 8
 files_reviewed_list:
@@ -14,41 +14,57 @@ files_reviewed_list:
   - src/rules/types.ts
 findings:
   critical: 2
-  warning: 3
-  info: 2
-  total: 7
+  warning: 5
+  info: 3
+  total: 10
 status: issues_found
 ---
 
 # Phase 02: Code Review Report
 
-**Reviewed:** 2026-05-01T12:00:00Z
+**Reviewed:** 2026-05-01T14:00:00Z (updated after plan 07 / GAP-02 gap-closure)
 **Depth:** standard
 **Files Reviewed:** 8
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the Phase 2 PDF pipeline after gap-closure plans 02-05 and 02-06 were applied. The
-previously identified issues (CR-01 through CR-04, WR-01 through WR-03) are now all correctly
-fixed in the current code: the double-`/v1` path is gone, `downloadPdf` takes the separate
-`applicantId` parameter, the intake stage is read from `config.job.stages.intake`, `resumeFileId`
-is validated with a full positive-integer guard, `hasPlaceholders` uses `some()` with an
-empty-array fast-path, the PII log emits only field names and types, and `validateStages` returns
-the stageMap that `index.ts` consumes directly.
+This report covers the full Phase 2 review, updated after plan 07 applied the GAP-02 gap-closure
+to `src/bamboohr/client.ts` and `src/pipeline/extract-cv.ts`.
 
-Two new blockers remain. The `resumeFileId` field lookup and the `questionsAndAnswers` field
-lookup in `extract-cv.ts` are both hardcoded string literals — they bypass the `fieldMap`
-abstraction entirely, meaning operators cannot reconfigure these paths without editing source code.
-Additionally the `config/schema.ts` `fieldMap` record has no minimum-length constraint, allowing
-an empty `fieldMap: {}` to pass validation while silently disabling every rule that depends on
-field resolution.
+**What plan 07 changed and whether it introduced new issues:**
 
-Three warnings cover: (1) the `maxSalary` rule's silent rejection of candidates with absent
-salary data, (2) a minor PII surface in a diagnostic log that does not filter the `applicant`
-key, and (3) the `requiredFields` rule treating a string `resumeFileId` value as "present" while
-`extract-cv.ts` requires a numeric value — creating a gap between what hard-rules consider a
-passing resume and what the pipeline can actually process.
+`client.ts` replaced the dead two-path `candidatePaths` loop with a two-step approach:
+`getApplicationDocuments()` (new method) fetches the documents list, then `downloadPdf()` extracts
+a download URL from the returned object using a defensive multi-field-name probe. The logic for
+normalising the documents response (array vs. wrapper object) and for URL extraction is sound for
+the known field-name variants. However two new warnings are introduced:
+
+1. `matchesFileId()` uses strict `===` equality against a `number` ID, but the API field values
+   from JSON may be strings — meaning the ID-match branch silently never fires and the fallback
+   "first URL" path is always taken when an application has multiple attachments. No crash, but the
+   wrong document could be downloaded.
+
+2. The error-path diagnostic logs dump the full raw response and the resolved download URL to
+   stderr. If BambooHR returns a pre-signed S3 URL (common for cloud-stored documents), the
+   signed credentials are logged in plaintext. One additional info item: the `void matchedDoc`
+   comment misrepresents the variable as "used only for debug logging above" when no log statement
+   actually references `matchedDoc` by value.
+
+`extract-cv.ts` had only its comment block updated (lines 73-77). No executable code changed.
+All previously identified issues in this file remain open.
+
+**Carry-forward from the earlier review (all still open):**
+
+- CR-01 and CR-02 (hardcoded field names in `extract-cv.ts`; empty `fieldMap` silently disables
+  all rules) are unresolved — plan 07 did not touch `extract-cv.ts` executable code or
+  `config/schema.ts`.
+- WR-01, WR-02, WR-03 (salary silent rejection, string/number `resumeFileId` type gap,
+  unfiltered `applicant` key log) are all unresolved.
+- IN-01 and IN-02 (Zod record idiom, caret version pins) are unresolved.
+
+Net findings after plan 07: 2 critical, 5 warnings, 3 info (up from 7 total — plan 07 added
+WR-04, WR-05, IN-03).
 
 ---
 
@@ -269,6 +285,112 @@ const safeKeys = Object.keys(detail).filter((k) => k !== 'applicant');
 
 ---
 
+### WR-04: `matchesFileId` uses strict `===` number comparison against JSON field that may be a string — ID match silently never fires (introduced in plan 07)
+
+**File:** `src/bamboohr/client.ts:192`
+
+**Issue:** The `matchesFileId` helper compares the document object's ID field against the
+`fileId` parameter (a TypeScript `number`) using strict equality:
+
+```typescript
+const matchesFileId = (doc: unknown, id: number): boolean => {
+  if (doc === null || typeof doc !== 'object') return false;
+  const d = doc as Record<string, unknown>;
+  return d['id'] === id || d['fileId'] === id || d['file_id'] === id;
+};
+```
+
+JSON deserialized via `res.json()` produces field values whose runtime type depends on how
+BambooHR serializes them. If the API returns `"id": "1234"` (a JSON string — which occurs in
+some BambooHR API variants for legacy endpoints), then `d['id']` is the string `"1234"` and
+`d['id'] === id` (where `id` is the number `1234`) evaluates to `false` via strict equality.
+The ID-match path silently fails for all documents and the code falls through to the "first
+document with a URL" fallback path.
+
+This is a silent correctness failure. The fallback still returns a URL so no error is thrown,
+but when an application has multiple attachments (cover letter + CV, or CV in multiple formats),
+the wrong document may be downloaded. Because the fallback logs only a single `console.error`
+line identifying the applicationId, there is no indication that an ID mismatch was the cause.
+
+**Fix:** Coerce to number before comparing, or also compare against the stringified form:
+
+```typescript
+const matchesFileId = (doc: unknown, id: number): boolean => {
+  if (doc === null || typeof doc !== 'object') return false;
+  const d = doc as Record<string, unknown>;
+  // Coerce to handle both numeric and string-serialized IDs from the API
+  const numericId = (val: unknown): number | null => {
+    if (typeof val === 'number') return val;
+    if (typeof val === 'string') { const n = Number(val); return Number.isFinite(n) ? n : null; }
+    return null;
+  };
+  return (
+    numericId(d['id']) === id ||
+    numericId(d['fileId']) === id ||
+    numericId(d['file_id']) === id
+  );
+};
+```
+
+---
+
+### WR-05: Error-path logs dump full raw response and resolved download URL — signed URL credentials leaked to stderr (introduced in plan 07)
+
+**File:** `src/bamboohr/client.ts:169-170, 229-235, 263-265`
+
+**Issue:** Three log statements in `downloadPdf()` emit sensitive data to stderr:
+
+1. **Line 169-170** — when the documents list is empty:
+   ```typescript
+   `[bamboohr] downloadPdf: raw documents response shape: ${JSON.stringify(docsRaw)}`,
+   ```
+   Dumps the entire API response. If BambooHR embeds file metadata (original filenames, upload
+   timestamps, owner info) in the documents list, this constitutes a PII leak to stderr.
+
+2. **Lines 229-235** — when no usable URL is found:
+   ```typescript
+   `[bamboohr] downloadPdf: full raw response: ${JSON.stringify(docsRaw)}`,
+   ```
+   Same issue as above, with the added risk that the documents list itself may contain pre-signed
+   download URLs for all documents on the application — logging the full raw response therefore
+   also logs those credentials.
+
+3. **Line 263-265** — on a failed binary download:
+   ```typescript
+   `[bamboohr] downloadPdf: binary download returned HTTP ${res.status} for URL=${absoluteUrl} ...`
+   ```
+   If `absoluteUrl` is a pre-signed S3 URL (standard for cloud document storage), the full URL
+   including query-string signature parameters (`X-Amz-Signature`, `X-Amz-Credential`, etc.) is
+   written to stderr in plaintext. Depending on how the container's stderr is captured (CloudWatch,
+   Datadog, Splunk), these credentials may be stored in a logging system with broader access than
+   the runtime environment.
+
+**Fix:**
+
+For the raw response logs, log only structural shape information rather than values:
+
+```typescript
+// Instead of JSON.stringify(docsRaw) — log shape only
+const shape = Array.isArray(docsRaw)
+  ? `array[${(docsRaw as unknown[]).length}]`
+  : typeof docsRaw === 'object' && docsRaw !== null
+    ? `object{keys: ${Object.keys(docsRaw as object).join(', ')}}`
+    : String(typeof docsRaw);
+console.error(`[bamboohr] downloadPdf: raw documents response shape: ${shape}`);
+```
+
+For the download URL in the error log, strip query parameters before logging:
+
+```typescript
+const safeUrl = (() => {
+  try { return new URL(absoluteUrl).origin + new URL(absoluteUrl).pathname; }
+  catch { return '(unparseable URL)'; }
+})();
+console.error(`[bamboohr] downloadPdf: binary download returned HTTP ${res.status} for URL=${safeUrl} ...`);
+```
+
+---
+
 ## Info
 
 ### IN-01: `config/schema.ts` comment cites `z.record(z.string(), z.string())` as Zod v4 API but the two-argument form is undocumented in official Zod v4 reference
@@ -313,6 +435,38 @@ pinning rationale already applied to `pdf-parse`:
 
 ---
 
-_Reviewed: 2026-05-01T12:00:00Z_
+### IN-03: `void matchedDoc` comment claims variable is used for debug logging — it is not (introduced in plan 07)
+
+**File:** `src/bamboohr/client.ts:246`
+
+**Issue:**
+
+```typescript
+void matchedDoc; // used only for debug logging above; suppress unused-var lint
+```
+
+The comment states `matchedDoc` is "used only for debug logging above". Tracing the code, no
+`console.error` or `console.log` statement references `matchedDoc` by value. The logging
+statements on lines 218-220 and 229-235 reference `docsRaw` and `docs.slice(0, 3)` —
+`matchedDoc` is assigned (lines 205, 221) but never read. The comment is inaccurate and will
+mislead future maintainers who search for where the matched document is logged.
+
+**Fix:** Either remove `matchedDoc` entirely (the assigned value is not needed) or, if the
+intent was to include it in a log, add the log:
+
+```typescript
+// Option A — remove unused variable
+// (delete matchedDoc assignment and void statement; update both break sites)
+
+// Option B — log it where useful (e.g. when falling back to first-URL path)
+console.error(
+  `[bamboohr] downloadPdf: using fallback document: ${JSON.stringify(matchedDoc)}`,
+);
+// NOTE: apply WR-05 shape-only logging if matchedDoc may contain PII
+```
+
+---
+
+_Reviewed: 2026-05-01T14:00:00Z (updated for plan 07 / GAP-02 gap-closure)_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
