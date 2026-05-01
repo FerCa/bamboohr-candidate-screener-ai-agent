@@ -29,7 +29,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Running the script with a YAML stage ID that does not exist in BambooHR prints a mismatch error and exits at startup
   4. A candidate failing a hard rule (e.g., salary above ceiling) produces a JSON log line with outcome `fail` and the specific unmet rule listed
   5. An error on one candidate (e.g., simulated API failure) is isolated in its log line and does not abort processing of subsequent candidates
-**Plans**: 5 plans
+**Plans**: 6 plans (5 original + 1 gap-closure)
 
 Plans:
 
@@ -46,7 +46,10 @@ Plans:
 **Wave 4** *(blocked on Wave 3 completion)*
 - [x] 01-05-PLAN.md — Entry point + logger: startup sequence, error-isolated loop, JSON log output (SAFE-01, INFRA-02)
 
-Cross-cutting constraints: ESM `.js` imports throughout; `DRY_RUN=true` default enforced; `applicationId` (not `applicantId`) used in all entity references; no native npm dependencies (Alpine-compatible stack only).
+**Wave 5** *(gap closure — blocked on Wave 4 completion)*
+- [ ] 01-06-PLAN.md — Gap closure: openingId placeholder guard, requiredFields fieldMap fix, LIVE_MODE doc alignment, MAX_PAGES ceiling (CONF-01, CONF-04, RULE-01)
+
+Cross-cutting constraints: ESM `.js` imports throughout; `LIVE_MODE=true` required to enable writes (default: dry-run); `applicationId` (not `applicantId`) used in all entity references; no native npm dependencies (Alpine-compatible stack only).
 
 ### Phase 2: PDF Pipeline
 **Goal**: For each candidate passing hard rules, the system downloads their CV PDF, validates it, extracts plain text, truncates it to a safe size, and produces a structured candidate context object ready for agent evaluation — with appropriate "Needs Human Review" fallback for unextractable CVs
