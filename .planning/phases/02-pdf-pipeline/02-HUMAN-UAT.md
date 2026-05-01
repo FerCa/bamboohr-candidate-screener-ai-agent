@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: partial
 phase: 02-pdf-pipeline
 source: [02-VERIFICATION.md]
 started: 2026-05-01T21:00:00Z
-updated: 2026-05-01T21:15:00Z
+updated: 2026-05-01T22:30:00Z
 ---
 
 ## Current Test
@@ -36,6 +36,7 @@ blocked: 2
 ## Gaps
 
 ### GAP-01: PDF download endpoint returns 404
-status: failed
+status: resolved
 description: Both candidate paths in downloadPdf() return 404. Primary path /applicant_tracking/applications/{applicationId}/documents/{fileId} not found. Fallback path has double /v1/ bug (CR-01) and wrong entity ID (CR-02). Correct BambooHR ATS attachment endpoint is unknown.
+resolved_by: 02-05 (fixed CR-01 double-/v1, CR-02 applicantId in fallback path)
 blocks: SC1, SC2, SC3
