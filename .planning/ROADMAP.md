@@ -60,7 +60,21 @@ Cross-cutting constraints: ESM `.js` imports throughout; `LIVE_MODE=true` requir
   2. Running the script against a candidate whose attachment returns a non-PDF Content-Type logs the candidate with outcome `needsReview` and does not attempt text extraction
   3. Running the script against a candidate with an image-only PDF (tiny word count, large file) logs outcome `needsReview` without calling GPT-4o
   4. The candidate context object produced for a passing candidate contains all fields needed for agent input: application answers, hard-rule results, and CV text
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+
+**Wave 1** *(parallel — no shared files)*
+- [ ] 02-01-PLAN.md — Type contracts: src/pipeline/types.ts (CandidateContext, NeedsReviewReason), extend CandidateDecision.outcome in src/rules/types.ts (RULE-03)
+- [ ] 02-02-PLAN.md — Install pdf-parse@1.1.4, add BambooHRClient.downloadPdf() binary download method (BAMB-04)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 02-03-PLAN.md — CV extraction orchestrator: src/pipeline/extract-cv.ts with buildCandidateContext(), image-only heuristic, all needsReview paths (PDF-01, PDF-02, RULE-03)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 02-04-PLAN.md — Wire PDF pipeline into src/index.ts: pass branch, needsReview counter, summary line extension (BAMB-04, PDF-01, PDF-02, RULE-03)
+
+Cross-cutting constraints: pdf-parse@1.1.4 pinned exactly (no caret); ESM `.js` imports on all new files; BambooHR attachment endpoint requires live discovery on first DRY_RUN; CV text never persisted to disk (GDPR).
 
 ### Phase 3: Agent Evaluation
 **Goal**: End-to-end screening flow runs in dry-run mode — hard-rule pre-filter feeds into GPT-4o soft evaluation via OpenAI Agents SDK, producing a structured pass/fail/review decision with a recruiter comment for every candidate, with no BambooHR writes yet
@@ -92,6 +106,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Executing (verifying) | - |
-| 2. PDF Pipeline | 0/TBD | Not started | - |
+| 2. PDF Pipeline | 0/4 | Not started | - |
 | 3. Agent Evaluation | 0/TBD | Not started | - |
 | 4. Live Mode & Deployment | 0/TBD | Not started | - |
