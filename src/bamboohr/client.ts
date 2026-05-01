@@ -87,6 +87,15 @@ export class BambooHRClient {
   }
 
   /**
+   * Fetch full application detail for a single application.
+   * The list endpoint returns summary data only; custom questions, desiredSalary,
+   * resumeFileId, and full address are only available on the detail endpoint.
+   */
+  async fetchApplicationDetails(id: number): Promise<BambooHRApplication> {
+    return this.get<BambooHRApplication>(`/applicant_tracking/applications/${id}`);
+  }
+
+  /**
    * BAMB-01: Fetch all applications in a given stage for a job opening.
    * Loops until paginationComplete === true using integer page parameter.
    * Returns flat array of all applications across all pages.

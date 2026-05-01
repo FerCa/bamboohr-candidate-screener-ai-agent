@@ -71,25 +71,27 @@ async function main(): Promise<void> {
   let failed = 0;
   let errors = 0;
 
+  const fieldMapValues = Object.values(config.fieldMap);
+  const hasPlaceholders = fieldMapValues.every((v) => v.includes('REPLACE_WITH'));
+
   for (const application of candidates) {
     try {
-      // First-run discovery: if all fieldMap values are placeholders, log raw JSON.
-      // This lets the operator inspect actual field paths before configuring fieldMap.
-      const fieldMapValues = Object.values(config.fieldMap);
-      const hasPlaceholders = fieldMapValues.every((v) =>
-        v.includes('REPLACE_WITH'),
-      );
+      // Fetch full detail — the list endpoint omits desiredSalary, resumeFileId,
+      // questionsAndAnswers, and full address needed for hard-rule evaluation.
+      const detail = await client.fetchApplicationDetails(application.id);
+
+      // First-run discovery: log the detail JSON once so operators can configure fieldMap.
       if (hasPlaceholders && processed === 0) {
-        console.error('[main] fieldMap has placeholder values. Logging raw application JSON for field discovery:');
-        console.error(JSON.stringify(application, null, 2));
+        console.error('[main] fieldMap has placeholder values. Logging application detail JSON for field discovery:');
+        console.error(JSON.stringify(detail, null, 2));
       }
 
       // Evaluate all hard rules (collect-all, no LLM)
-      const result = evaluateHardRules(config, application);
+      const result = evaluateHardRules(config, detail);
 
       logDecision({
-        candidateId: application.applicant.id,
-        applicationId: application.id,
+        candidateId: detail.applicant.id,
+        applicationId: detail.id,
         outcome: result.outcome,
         reasons: result.reasons,
         timestamp: new Date().toISOString(),
