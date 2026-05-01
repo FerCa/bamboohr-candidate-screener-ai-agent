@@ -56,9 +56,10 @@ export class BambooHRClient {
    * CONF-02: Fetch live pipeline stages and compare against config stage names.
    * Exits with code 1 if any configured stage name is not found in the live API.
    * Call this once at startup, before the candidate loop.
+   * Returns Map<stageName, stageId> — consumed by index.ts to avoid duplicate API call (WR-03).
    */
-  async validateStages(config: Config): Promise<void> {
-    let statuses: BambooHRStatus[];
+  async validateStages(config: Config): Promise<Map<string, number>> {
+    let statuses: BambooHRStatus[] = [];
     try {
       statuses = await this.get<BambooHRStatus[]>('/applicant_tracking/statuses');
     } catch (err) {
@@ -84,6 +85,9 @@ export class BambooHRClient {
     if (hasError) {
       process.exit(1);
     }
+
+    // Return Map<stageName, stageId> — consumed by index.ts to avoid duplicate API call (WR-03)
+    return new Map(statuses.map((s) => [s.name, s.id]));
   }
 
   /**
@@ -113,14 +117,17 @@ export class BambooHRClient {
    */
   async downloadPdf(
     applicationId: number,
+    applicantId: number,
     fileId: number,
   ): Promise<{ buffer: Buffer; contentType: string }> {
     // Ordered list of paths to try — most likely first (A2 assumption).
     // If the first returns 404, try the second. If both fail, throw with
     // instructions for the developer to check BambooHR's Postman collection.
+    // NOTE: Second path uses applicantId (not applicationId) and has no leading /v1
+    // segment because this.baseUrl already ends with /api/v1 (CR-01, CR-02 fixes).
     const candidatePaths = [
       `/applicant_tracking/applications/${applicationId}/documents/${fileId}`,
-      `/v1/employees/${applicationId}/files/${fileId}`,
+      `/employees/${applicantId}/files/${fileId}`,
     ];
 
     let lastStatus = 0;
@@ -137,7 +144,7 @@ export class BambooHRClient {
       if (res.status === 404) {
         lastStatus = 404;
         console.error(
-          `[bamboohr] downloadPdf: 404 on path ${path} (applicationId=${applicationId}, fileId=${fileId})`,
+          `[bamboohr] downloadPdf: 404 on path ${path} (applicationId=${applicationId}, applicantId=${applicantId}, fileId=${fileId})`,
         );
         continue;
       }
@@ -156,7 +163,7 @@ export class BambooHRClient {
 
     // All candidate paths returned 404 — endpoint discovery required.
     console.error(
-      `[bamboohr] downloadPdf: All candidate paths returned 404 for applicationId=${applicationId}, fileId=${fileId}.`,
+      `[bamboohr] downloadPdf: All candidate paths returned 404 for applicationId=${applicationId}, applicantId=${applicantId}, fileId=${fileId}.`,
     );
     console.error(
       `[bamboohr] Attempted paths:\n${candidatePaths.map((p) => `  ${this.baseUrl}${p}`).join('\n')}`,
