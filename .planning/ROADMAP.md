@@ -29,7 +29,14 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Running the script with a YAML stage ID that does not exist in BambooHR prints a mismatch error and exits at startup
   4. A candidate failing a hard rule (e.g., salary above ceiling) produces a JSON log line with outcome `fail` and the specific unmet rule listed
   5. An error on one candidate (e.g., simulated API failure) is isolated in its log line and does not abort processing of subsequent candidates
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Project scaffold: package.json, tsconfig.json, .gitignore, .env.example, config.yaml
+- [ ] 01-02-PLAN.md — Config layer: Zod schema, Config types, fail-fast loader (CONF-01, CONF-04)
+- [ ] 01-03-PLAN.md — BambooHR client: auth, stage validation, paginated candidate fetch (BAMB-01, CONF-02)
+- [ ] 01-04-PLAN.md — Hard-rule evaluator: four rule types, collect-all, fieldMap resolution (RULE-01)
+- [ ] 01-05-PLAN.md — Entry point + logger: startup sequence, error-isolated loop, JSON log output (SAFE-01, INFRA-02)
 
 ### Phase 2: PDF Pipeline
 **Goal**: For each candidate passing hard rules, the system downloads their CV PDF, validates it, extracts plain text, truncates it to a safe size, and produces a structured candidate context object ready for agent evaluation — with appropriate "Needs Human Review" fallback for unextractable CVs
@@ -71,7 +78,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/5 | Not started | - |
 | 2. PDF Pipeline | 0/TBD | Not started | - |
 | 3. Agent Evaluation | 0/TBD | Not started | - |
 | 4. Live Mode & Deployment | 0/TBD | Not started | - |
