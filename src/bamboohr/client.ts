@@ -14,6 +14,9 @@ export class BambooHRClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
 
+  /** Safety ceiling: abort pagination if BambooHR API never signals paginationComplete. */
+  private static readonly MAX_PAGES = 100;
+
   constructor(subdomain: string, apiKey: string) {
     // Official URL format: {subdomain}.bamboohr.com/api/v1
     // NOT the legacy: api.bamboohr.com/api/gateway.php/{domain}/v1
@@ -96,7 +99,7 @@ export class BambooHRClient {
     const all: BambooHRApplication[] = [];
     let page = 1;
 
-    while (true) {
+    while (page <= BambooHRClient.MAX_PAGES) {
       const data = await this.get<ApplicationsResponse>(
         '/applicant_tracking/applications',
         {
@@ -108,6 +111,12 @@ export class BambooHRClient {
       all.push(...data.applications);
       if (data.paginationComplete) break;
       page++;
+    }
+
+    if (page > BambooHRClient.MAX_PAGES) {
+      console.error(
+        `[bamboohr] fetchCandidates: reached MAX_PAGES (${BambooHRClient.MAX_PAGES}) without paginationComplete — aborting pagination. Results may be incomplete.`,
+      );
     }
 
     return all;

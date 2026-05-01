@@ -27,7 +27,12 @@ const requiredKeywordRuleSchema = z.object({
 
 export const configSchema = z.object({
   job: z.object({
-    openingId: z.string().min(1),
+    openingId: z
+      .string()
+      .min(1)
+      .refine((v) => !v.startsWith('REPLACE_WITH'), {
+        message: 'openingId must be set to a real BambooHR job opening ID',
+      }),
     stages: z.object({
       pass: z.string().min(1),
       fail: z.string().min(1),
