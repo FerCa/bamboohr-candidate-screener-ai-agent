@@ -100,83 +100,178 @@ export class BambooHRClient {
   }
 
   /**
+   * GAP-02: Fetch document list for an application.
+   * BambooHR requires fetching this list first; the list items contain the actual
+   * download URL or endpoint — resumeFileId alone is not a usable download path.
+   *
+   * Response shape is undocumented. Returns `unknown` so the caller can handle
+   * multiple possible shapes (array, object with items[], etc.) defensively.
+   */
+  async getApplicationDocuments(applicationId: number): Promise<unknown> {
+    return this.get<unknown>(
+      `/applicant_tracking/applications/${applicationId}/documents`,
+    );
+  }
+
+  /**
    * BAMB-04: Download a candidate's CV as a binary Buffer.
-   * Uses Basic Auth (same as all ATS endpoints).
-   * Does NOT set Accept: application/json — binary response must not negotiate JSON.
-   * Reads response body via arrayBuffer() (not json()) for binary content.
+   * Uses a two-step process (GAP-02 fix):
+   *   Step 1 — getApplicationDocuments() fetches the documents list for the application
+   *   Step 2 — The document object's actual download URL is used for the binary fetch
    *
-   * IMPORTANT: The BambooHR ATS download endpoint path is NOT publicly documented.
-   * The most-likely path is tried first; on 404 the attempted paths are logged so
-   * the developer can discover the correct path on the first DRY_RUN.
+   * resumeFileId from the application detail is NOT a direct download endpoint ID.
+   * The documents list endpoint returns objects with the actual download URL.
    *
-   * Assumptions (A1-A4 in RESEARCH.md):
-   *   A1 — field name in application detail is 'resumeFileId' (camelCase)
-   *   A2 — endpoint path is /applicant_tracking/applications/{applicationId}/documents/{fileId}
-   *   A3 — same Basic Auth as all ATS endpoints
-   *   A4 — response is direct binary (not redirect to signed URL)
+   * Does NOT set Accept: application/json on the binary download step.
+   * Reads response body via arrayBuffer() for binary content.
    */
   async downloadPdf(
     applicationId: number,
     applicantId: number,
     fileId: number,
   ): Promise<{ buffer: Buffer; contentType: string }> {
-    // Ordered list of paths to try — most likely first (A2 assumption).
-    // If the first returns 404, try the second. If both fail, throw with
-    // instructions for the developer to check BambooHR's Postman collection.
-    // NOTE: Second path uses applicantId (not applicationId) and has no leading /v1
-    // segment because this.baseUrl already ends with /api/v1 (CR-01, CR-02 fixes).
-    const candidatePaths = [
-      `/applicant_tracking/applications/${applicationId}/documents/${fileId}`,
-      `/employees/${applicantId}/files/${fileId}`,
-    ];
-
-    let lastStatus = 0;
-    for (const path of candidatePaths) {
-      const url = `${this.baseUrl}${path}`;
-      const res = await fetch(url, {
-        headers: {
-          // Authorization REQUIRED — same Basic Auth as all ATS endpoints (A3)
-          Authorization: this.authHeader,
-          // NO Accept: application/json — binary response does not negotiate via Accept
-        },
-      });
-
-      if (res.status === 404) {
-        lastStatus = 404;
-        console.error(
-          `[bamboohr] downloadPdf: 404 on path ${path} (applicationId=${applicationId}, applicantId=${applicantId}, fileId=${fileId})`,
-        );
-        continue;
-      }
-
-      if (!res.ok) {
-        throw new Error(
-          `BambooHR PDF download error: HTTP ${res.status} ${res.statusText} ` +
-          `(applicationId=${applicationId}, fileId=${fileId}, path=${path})`,
-        );
-      }
-
-      const contentType = res.headers.get('content-type') ?? '';
-      const arrayBuffer = await res.arrayBuffer();
-      return { buffer: Buffer.from(arrayBuffer), contentType };
+    // --- Step 1: Fetch documents list ---
+    let docsRaw: unknown;
+    try {
+      docsRaw = await this.getApplicationDocuments(applicationId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[bamboohr] downloadPdf: documents list fetch failed for applicationId=${applicationId}: ${message}`,
+      );
+      throw new Error(
+        `BambooHR PDF download: documents list fetch failed (applicationId=${applicationId}). ` +
+        `Original error: ${message}`,
+      );
     }
 
-    // All candidate paths returned 404 — endpoint discovery required.
-    console.error(
-      `[bamboohr] downloadPdf: All candidate paths returned 404 for applicationId=${applicationId}, applicantId=${applicantId}, fileId=${fileId}.`,
-    );
-    console.error(
-      `[bamboohr] Attempted paths:\n${candidatePaths.map((p) => `  ${this.baseUrl}${p}`).join('\n')}`,
-    );
-    console.error(
-      `[bamboohr] To discover the correct path: check BambooHR Postman collection at ` +
-      `https://documentation.bamboohr.com/docs/postman-collection ` +
-      `or contact BambooHR support for the ATS attachment REST endpoint.`,
-    );
-    throw new Error(
-      `BambooHR PDF download: endpoint not found (HTTP ${lastStatus}). ` +
-      `Check stderr for attempted paths and discovery instructions.`,
-    );
+    // Normalise to array — BambooHR may return [] directly or { data: [], documents: [], items: [] }
+    let docs: unknown[];
+    if (Array.isArray(docsRaw)) {
+      docs = docsRaw;
+    } else if (docsRaw !== null && typeof docsRaw === 'object') {
+      const wrapper = docsRaw as Record<string, unknown>;
+      const inner =
+        wrapper['data'] ??
+        wrapper['documents'] ??
+        wrapper['items'] ??
+        wrapper['files'];
+      docs = Array.isArray(inner) ? inner : [];
+    } else {
+      docs = [];
+    }
+
+    if (docs.length === 0) {
+      console.error(
+        `[bamboohr] downloadPdf: documents list is empty for applicationId=${applicationId}, applicantId=${applicantId}, fileId=${fileId}.`,
+      );
+      console.error(
+        `[bamboohr] downloadPdf: raw documents response shape: ${JSON.stringify(docsRaw)}`,
+      );
+      throw new Error(
+        `BambooHR PDF download: no documents found for applicationId=${applicationId}. ` +
+        `Check stderr for the raw response shape.`,
+      );
+    }
+
+    // Helper: extract any usable download URL from a document object
+    const extractUrl = (doc: unknown): string | null => {
+      if (doc === null || typeof doc !== 'object') return null;
+      const d = doc as Record<string, unknown>;
+      for (const field of ['url', 'downloadUrl', 'download_url', 'original', 'href', 'link', 'fileUrl', 'file_url']) {
+        const val = d[field];
+        if (typeof val === 'string' && val.length > 0) return val;
+      }
+      return null;
+    };
+
+    // Helper: check whether a document's ID matches the resumeFileId
+    const matchesFileId = (doc: unknown, id: number): boolean => {
+      if (doc === null || typeof doc !== 'object') return false;
+      const d = doc as Record<string, unknown>;
+      return d['id'] === id || d['fileId'] === id || d['file_id'] === id;
+    };
+
+    // Prefer a document whose ID matches resumeFileId; fall back to first with any URL
+    let downloadUrl: string | null = null;
+    let matchedDoc: unknown = null;
+
+    // Priority 1: exact ID match
+    for (const doc of docs) {
+      if (matchesFileId(doc, fileId)) {
+        const url = extractUrl(doc);
+        if (url !== null) {
+          downloadUrl = url;
+          matchedDoc = doc;
+          break;
+        }
+      }
+    }
+
+    // Priority 2: first document with a usable URL (ID match failed or no ID field)
+    if (downloadUrl === null) {
+      for (const doc of docs) {
+        const url = extractUrl(doc);
+        if (url !== null) {
+          downloadUrl = url;
+          matchedDoc = doc;
+          console.error(
+            `[bamboohr] downloadPdf: no document matched fileId=${fileId}; using first document with a URL (applicationId=${applicationId}).`,
+          );
+          break;
+        }
+      }
+    }
+
+    if (downloadUrl === null) {
+      console.error(
+        `[bamboohr] downloadPdf: documents list returned ${docs.length} document(s) but none had a usable URL field.`,
+      );
+      console.error(
+        `[bamboohr] downloadPdf: document shapes (first 3): ${JSON.stringify(docs.slice(0, 3))}`,
+      );
+      console.error(
+        `[bamboohr] downloadPdf: full raw response: ${JSON.stringify(docsRaw)}`,
+      );
+      console.error(
+        `[bamboohr] Expected one of these URL fields: url, downloadUrl, download_url, original, href, link, fileUrl, file_url`,
+      );
+      throw new Error(
+        `BambooHR PDF download: could not find a download URL in documents list ` +
+        `(applicationId=${applicationId}). Check stderr for document shapes and add the ` +
+        `correct field name to the extractUrl helper in client.ts.`,
+      );
+    }
+
+    void matchedDoc; // used only for debug logging above; suppress unused-var lint
+
+    // --- Step 2: Download the binary PDF ---
+    // The URL from the documents list may be absolute (https://...) or a relative path.
+    const absoluteUrl = downloadUrl.startsWith('http')
+      ? downloadUrl
+      : `${this.baseUrl}${downloadUrl.startsWith('/') ? '' : '/'}${downloadUrl}`;
+
+    const res = await fetch(absoluteUrl, {
+      headers: {
+        Authorization: this.authHeader,
+        // NO Accept: application/json — binary response
+      },
+    });
+
+    if (!res.ok) {
+      console.error(
+        `[bamboohr] downloadPdf: binary download returned HTTP ${res.status} for URL=${absoluteUrl} ` +
+        `(applicationId=${applicationId}, fileId=${fileId})`,
+      );
+      throw new Error(
+        `BambooHR PDF download error: HTTP ${res.status} ${res.statusText} ` +
+        `(applicationId=${applicationId}, fileId=${fileId}, url=${absoluteUrl})`,
+      );
+    }
+
+    const contentType = res.headers.get('content-type') ?? '';
+    const arrayBuffer = await res.arrayBuffer();
+    return { buffer: Buffer.from(arrayBuffer), contentType };
   }
 
   /**

@@ -70,9 +70,11 @@ export async function buildCandidateContext(
   }
 
   // --- Step 2: Download PDF binary (BAMB-04) ---
-  // downloadPdf() throws for network/auth errors — those propagate to outer catch (SAFE-01).
-  // downloadPdf() throws for 404 after trying all candidate paths — also propagate.
-  // We treat download errors as recoverable needsReview here via inner try/catch.
+  // downloadPdf() now uses a two-step approach (GAP-02 fix):
+  //   Step 1: fetches document list via GET /applicant_tracking/applications/{id}/documents
+  //   Step 2: downloads the binary using the URL found in the document object
+  // Throws for network/auth errors and when no usable URL is found in the documents list.
+  // All throws are caught here and returned as needsReview('extraction-failed') (SAFE-01).
   let buffer: Buffer;
   let contentType: string;
   try {
