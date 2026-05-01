@@ -34,6 +34,7 @@ export const configSchema = z.object({
         message: 'openingId must be set to a real BambooHR job opening ID',
       }),
     stages: z.object({
+      intake: z.string().min(1),
       pass: z.string().min(1),
       fail: z.string().min(1),
     }),
