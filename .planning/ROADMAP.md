@@ -36,7 +36,7 @@ Plans:
 **Wave 1**
 - [x] 01-01-PLAN.md — Project scaffold: package.json, tsconfig.json, .gitignore, .env.example, config.yaml
 
-**Wave 2** *(blocked on Wave 1 completion)*
+**Wave 2** *(parallel — no shared files)*
 - [x] 01-02-PLAN.md — Config layer: Zod schema, Config types, fail-fast loader (CONF-01, CONF-04)
 - [x] 01-03-PLAN.md — BambooHR client: auth, stage validation, paginated candidate fetch (BAMB-01, CONF-02)
 
@@ -60,19 +60,25 @@ Cross-cutting constraints: ESM `.js` imports throughout; `LIVE_MODE=true` requir
   2. Running the script against a candidate whose attachment returns a non-PDF Content-Type logs the candidate with outcome `needsReview` and does not attempt text extraction
   3. Running the script against a candidate with an image-only PDF (tiny word count, large file) logs outcome `needsReview` without calling GPT-4o
   4. The candidate context object produced for a passing candidate contains all fields needed for agent input: application answers, hard-rule results, and CV text
-**Plans**: 4 plans
+**Plans**: 6 plans (4 original + 2 gap-closure)
 
 Plans:
 
 **Wave 1** *(parallel — no shared files)*
-- [ ] 02-01-PLAN.md — Type contracts: src/pipeline/types.ts (CandidateContext, NeedsReviewReason), extend CandidateDecision.outcome in src/rules/types.ts (RULE-03)
-- [ ] 02-02-PLAN.md — Install pdf-parse@1.1.4, add BambooHRClient.downloadPdf() binary download method (BAMB-04)
+- [x] 02-01-PLAN.md — Type contracts: src/pipeline/types.ts (CandidateContext, NeedsReviewReason), extend CandidateDecision.outcome in src/rules/types.ts (RULE-03)
+- [x] 02-02-PLAN.md — Install pdf-parse@1.1.4, add BambooHRClient.downloadPdf() binary download method (BAMB-04)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 02-03-PLAN.md — CV extraction orchestrator: src/pipeline/extract-cv.ts with buildCandidateContext(), image-only heuristic, all needsReview paths (PDF-01, PDF-02, RULE-03)
+- [x] 02-03-PLAN.md — CV extraction orchestrator: src/pipeline/extract-cv.ts with buildCandidateContext(), image-only heuristic, all needsReview paths (PDF-01, PDF-02, RULE-03)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 02-04-PLAN.md — Wire PDF pipeline into src/index.ts: pass branch, needsReview counter, summary line extension (BAMB-04, PDF-01, PDF-02, RULE-03)
+- [x] 02-04-PLAN.md — Wire PDF pipeline into src/index.ts: pass branch, needsReview counter, summary line extension (BAMB-04, PDF-01, PDF-02, RULE-03)
+
+**Wave 4** *(gap closure — blocked on Wave 3 completion)*
+- [ ] 02-05-PLAN.md — Fix downloadPdf() double-/v1 and wrong entity ID (CR-01, CR-02); validateStages() return type (WR-03 client); rawFileId runtime validation (CR-04) (BAMB-04, RULE-03)
+
+**Wave 5** *(gap closure — blocked on Wave 4 completion)*
+- [ ] 02-06-PLAN.md — Add intake stage to schema + config; wire stageMap in index.ts; fix hasPlaceholders; replace PII log (CR-03, WR-01, WR-02, WR-03 index) (BAMB-04, PDF-01, PDF-02, RULE-03)
 
 Cross-cutting constraints: pdf-parse@1.1.4 pinned exactly (no caret); ESM `.js` imports on all new files; BambooHR attachment endpoint requires live discovery on first DRY_RUN; CV text never persisted to disk (GDPR).
 
@@ -106,6 +112,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Executing (verifying) | - |
-| 2. PDF Pipeline | 0/4 | Ready to execute | - |
+| 2. PDF Pipeline | 4/6 | Gap closure in progress | - |
 | 3. Agent Evaluation | 0/TBD | Not started | - |
 | 4. Live Mode & Deployment | 0/TBD | Not started | - |
