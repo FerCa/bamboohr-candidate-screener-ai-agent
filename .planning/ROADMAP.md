@@ -60,7 +60,7 @@ Cross-cutting constraints: ESM `.js` imports throughout; `LIVE_MODE=true` requir
   2. Running the script against a candidate whose attachment returns a non-PDF Content-Type logs the candidate with outcome `needsReview` and does not attempt text extraction
   3. Running the script against a candidate with an image-only PDF (tiny word count, large file) logs outcome `needsReview` without calling GPT-4o
   4. The candidate context object produced for a passing candidate contains all fields needed for agent input: application answers, hard-rule results, and CV text
-**Plans**: 6 plans (4 original + 2 gap-closure)
+**Plans**: 7 plans (4 original + 3 gap-closure)
 
 Plans:
 
@@ -79,6 +79,9 @@ Plans:
 
 **Wave 5** *(gap closure — blocked on Wave 4 completion)*
 - [x] 02-06-PLAN.md — Add intake stage to schema + config; wire stageMap in index.ts; fix hasPlaceholders; replace PII log (CR-03, WR-01, WR-02, WR-03 index) (BAMB-04, PDF-01, PDF-02, RULE-03)
+
+**Wave 7** *(gap closure — blocked on Wave 5 completion)*
+- [ ] 02-07-PLAN.md — Fix PDF download 404 (GAP-02): two-step approach via documents list API (GET /applicant_tracking/applications/{id}/documents); defensive URL extraction; shape discovery logging (BAMB-04, PDF-01, PDF-02, RULE-03)
 
 Cross-cutting constraints: pdf-parse@1.1.4 pinned exactly (no caret); ESM `.js` imports on all new files; BambooHR attachment endpoint requires live discovery on first DRY_RUN; CV text never persisted to disk (GDPR).
 
