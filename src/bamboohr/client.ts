@@ -96,6 +96,83 @@ export class BambooHRClient {
   }
 
   /**
+   * BAMB-04: Download a candidate's CV as a binary Buffer.
+   * Uses Basic Auth (same as all ATS endpoints).
+   * Does NOT set Accept: application/json — binary response must not negotiate JSON.
+   * Reads response body via arrayBuffer() (not json()) for binary content.
+   *
+   * IMPORTANT: The BambooHR ATS download endpoint path is NOT publicly documented.
+   * The most-likely path is tried first; on 404 the attempted paths are logged so
+   * the developer can discover the correct path on the first DRY_RUN.
+   *
+   * Assumptions (A1-A4 in RESEARCH.md):
+   *   A1 — field name in application detail is 'resumeFileId' (camelCase)
+   *   A2 — endpoint path is /applicant_tracking/applications/{applicationId}/documents/{fileId}
+   *   A3 — same Basic Auth as all ATS endpoints
+   *   A4 — response is direct binary (not redirect to signed URL)
+   */
+  async downloadPdf(
+    applicationId: number,
+    fileId: number,
+  ): Promise<{ buffer: Buffer; contentType: string }> {
+    // Ordered list of paths to try — most likely first (A2 assumption).
+    // If the first returns 404, try the second. If both fail, throw with
+    // instructions for the developer to check BambooHR's Postman collection.
+    const candidatePaths = [
+      `/applicant_tracking/applications/${applicationId}/documents/${fileId}`,
+      `/v1/employees/${applicationId}/files/${fileId}`,
+    ];
+
+    let lastStatus = 0;
+    for (const path of candidatePaths) {
+      const url = `${this.baseUrl}${path}`;
+      const res = await fetch(url, {
+        headers: {
+          // Authorization REQUIRED — same Basic Auth as all ATS endpoints (A3)
+          Authorization: this.authHeader,
+          // NO Accept: application/json — binary response does not negotiate via Accept
+        },
+      });
+
+      if (res.status === 404) {
+        lastStatus = 404;
+        console.error(
+          `[bamboohr] downloadPdf: 404 on path ${path} (applicationId=${applicationId}, fileId=${fileId})`,
+        );
+        continue;
+      }
+
+      if (!res.ok) {
+        throw new Error(
+          `BambooHR PDF download error: HTTP ${res.status} ${res.statusText} ` +
+          `(applicationId=${applicationId}, fileId=${fileId}, path=${path})`,
+        );
+      }
+
+      const contentType = res.headers.get('content-type') ?? '';
+      const arrayBuffer = await res.arrayBuffer();
+      return { buffer: Buffer.from(arrayBuffer), contentType };
+    }
+
+    // All candidate paths returned 404 — endpoint discovery required.
+    console.error(
+      `[bamboohr] downloadPdf: All candidate paths returned 404 for applicationId=${applicationId}, fileId=${fileId}.`,
+    );
+    console.error(
+      `[bamboohr] Attempted paths:\n${candidatePaths.map((p) => `  ${this.baseUrl}${p}`).join('\n')}`,
+    );
+    console.error(
+      `[bamboohr] To discover the correct path: check BambooHR Postman collection at ` +
+      `https://documentation.bamboohr.com/docs/postman-collection ` +
+      `or contact BambooHR support for the ATS attachment REST endpoint.`,
+    );
+    throw new Error(
+      `BambooHR PDF download: endpoint not found (HTTP ${lastStatus}). ` +
+      `Check stderr for attempted paths and discovery instructions.`,
+    );
+  }
+
+  /**
    * BAMB-01: Fetch all applications in a given stage for a job opening.
    * Loops until paginationComplete === true using integer page parameter.
    * Returns flat array of all applications across all pages.
