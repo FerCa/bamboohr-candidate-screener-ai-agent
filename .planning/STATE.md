@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: ready_to_execute
-stopped_at: Phase 2 planned
-last_updated: "2026-05-01T21:00:00.000Z"
-last_activity: 2026-05-01 — Phase 2 planning complete (4 plans, 3 waves)
+stopped_at: Phase 2 gap-closure planned
+last_updated: "2026-05-01T22:25:00.000Z"
+last_activity: 2026-05-01 — Phase 2 gap-closure planning complete (6 plans, 5 waves; 2 gap-closure plans added)
 progress:
   total_phases: 4
   completed_phases: 1
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-05-01)
 ## Current Position
 
 Phase: 2 of 4 (PDF Pipeline)
-Plan: 0 of 4 in current phase
-Status: Ready to execute — planning complete, 4 plans in 3 waves
-Last activity: 2026-05-01 — Phase 2 planning complete (4 plans, 3 waves)
+Plan: 0 of 6 in current phase
+Status: Ready to execute — gap-closure planning complete, 6 plans in 5 waves
+Last activity: 2026-05-01 — Phase 2 gap-closure planning complete (6 plans, 5 waves; plans 02-05 and 02-06 added to fix GAP-01, CR-01–CR-04, WR-01–WR-03)
 
 Progress: [░░░░░░░░░░] 0%
 
