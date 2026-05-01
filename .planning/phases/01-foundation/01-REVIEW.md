@@ -1,6 +1,6 @@
 ---
 phase: 01-foundation
-reviewed: 2026-05-01T00:00:00Z
+reviewed: 2026-05-01T12:00:00Z
 depth: standard
 files_reviewed: 14
 files_reviewed_list:
@@ -21,141 +21,156 @@ files_reviewed_list:
 findings:
   critical: 3
   warning: 4
-  info: 2
-  total: 9
+  info: 1
+  total: 8
 status: issues_found
 ---
 
 # Phase 01: Code Review Report
 
-**Reviewed:** 2026-05-01T00:00:00Z
+**Reviewed:** 2026-05-01T12:00:00Z
 **Depth:** standard
 **Files Reviewed:** 14
 **Status:** issues_found
 
 ## Summary
 
-The Foundation phase implements config loading, the BambooHR ATS client, hard-rule evaluation, and structured JSON logging. The overall architecture is sound: credentials are correctly env-var-only, the dry-run default is correctly wired, and the evaluate-all (no early-exit) collect rule is correctly implemented.
+The Foundation phase delivers config loading, BambooHR ATS client, hard-rule evaluation, and
+structured JSON logging. The architecture is sound: credentials are env-var-only, the dry-run
+default is correctly implemented, and the collect-all evaluation order is correctly maintained.
 
 Three blockers were found:
 
-1. The `requiredFields` rule bypasses `fieldMap` entirely and does a direct property lookup on the top-level application object — this means the `resume` field check silently passes for any candidate because `resume` is never a top-level application key in the BambooHR API response. This is a correctness failure in the primary hard-rule gate.
-2. The `isDryRun()` helper reads `LIVE_MODE` but `.env.example` documents `DRY_RUN=true` as the flag operators set. This naming mismatch means operators who follow `.env.example` instructions will have no effect on the dry-run guard: setting `DRY_RUN=false` in `.env` is silently ignored.
-3. The `openingId` schema accepts any non-empty string, so the placeholder value `"REPLACE_WITH_YOUR_JOB_OPENING_ID"` passes Zod validation and the agent will issue live API calls against a nonsense job ID, returning empty results with no warning.
+1. The candidate fetch stage is hardcoded as `"New"` in `index.ts`. This string is not sourced
+   from `config.yaml` and is not validated by `validateStages`. If the BambooHR account uses a
+   different name for the initial stage (e.g., "Applied", "Inbox"), the agent silently processes
+   zero candidates with no error — a silent wrong-result failure.
 
-Four warnings cover: an infinite-loop risk if the BambooHR API never sets `paginationComplete`, a duplicate `Config` export under two names in `types.ts`, the `dryRun` variable being computed but unused at runtime (no guard at the write site), and a missing guard against `fieldMapValues` being an empty array in the placeholder-detection logic.
+2. The `requiredBoolean` evaluator does not handle numeric `0`/`1` values. BambooHR API responses
+   may return boolean form answers as integers; unhandled values cause `actual` to stay `undefined`,
+   unconditionally failing every candidate on that rule regardless of their actual answer.
+
+3. The `hasPlaceholders` detection in `index.ts` uses `Array.every()` instead of `Array.some()`.
+   JavaScript's vacuous truth rule means an empty `fieldMap` (`{}`) evaluates `[].every(...)` as
+   `true`, triggering the raw-JSON discovery log for every candidate even when no field-map rules
+   exist. Conversely, a partially-configured fieldMap (some real values, one placeholder) silently
+   suppresses the discovery log even though discovery is still needed.
+
+Four warnings cover: pagination data loss when `MAX_PAGES` is hit (error is logged but incomplete
+results are silently returned), `dryRun` computed but never branched on (write-gate gap for Phase
+4), a duplicate type export creating two names for the same `Config` type, and the missing source
+stage in `config.yaml` that makes the hardcoded `"New"` bug impossible to fix without a schema
+change.
 
 ---
 
 ## Critical Issues
 
-### CR-01: `requiredFields` rule does not use `fieldMap` — direct property access always misses nested fields
+### CR-01: Candidate source stage hardcoded as `"New"` — silently processes zero candidates if stage name differs
 
-**File:** `src/rules/evaluator.ts:84`
-**Issue:** Rule 2 (`requiredFields`) accesses fields as `(application as Record<string, unknown>)[fieldName]` — a direct lookup on the top-level application object. The field name `"resume"` (as declared in `config.yaml`) is not a top-level key on `BambooHRApplication`; the resume file ID is nested (e.g., `application.resume.id` or similar). This means the check always evaluates `undefined`, which causes `allPresent = false` and pushes the label, permanently failing every candidate on this rule regardless of whether they attached a CV. Alternatively, if the operator maps `resume` through `fieldMap` to a path, they have no way to use it here because `fieldMap` is not consulted. Either way, the rule does not behave as documented.
-
-Additionally, unlike all other rules, `requiredFields` uses a single shared `label` for all fields in the list — if multiple fields are checked and only one is missing, the operator cannot distinguish which one failed from the log output.
-
-**Fix:** Use `resolveField` (or an equivalent top-level key lookup for truly flat fields), consistent with how Rules 3 and 4 are implemented. For field names that represent nested API paths, route them through `fieldMap`:
+**File:** `src/index.ts:54`
+**Issue:** The stage used to fetch candidates is hardcoded as the string literal `"New"`:
 ```typescript
-// Option A: route every requiredFields entry through fieldMap (consistent)
-for (const fieldName of fields) {
-  const value = resolveField(application, fieldName, fieldMap);
-  if (value === undefined || value === null || value === '') {
-    allPresent = false;
-    break;
-  }
-}
+const newStatus = statuses.find((s) => s.name === 'New');
+```
+`config.yaml` defines `job.stages.pass` and `job.stages.fail`, but there is no `job.stages.source`
+or equivalent configurable field. The string `"New"` is not validated by `validateStages()` and is
+not present in `config.yaml`. If the operator's BambooHR account uses a different stage name for
+newly-applied candidates (e.g., "Applied", "Inbox", "Received"), `statuses.find` returns
+`undefined`, the agent exits at line 56 with a misleading error, OR the operator never reaches
+that case because their pipeline genuinely has a "New" stage but it's mapped to a different
+concept.
 
-// Option B (if some required fields are truly top-level): keep direct access
-// but document which fields are top-level vs. fieldMap-resolved and add a
-// per-field label so the operator knows which field was missing.
+More critically, if `newStatus` is found but returns 0 applications (because the real intake stage
+has a different name), the agent logs `processed=0 pass=0 fail=0 errors=0` and exits with code 0 —
+a silent wrong-result that looks like success.
+
+**Fix:** Add a `source` stage name to `config.yaml` and `schema.ts`, then use it in `index.ts`:
+
+`config.yaml`:
+```yaml
+job:
+  openingId: "REPLACE_WITH_YOUR_JOB_OPENING_ID"
+  stages:
+    source: "New"          # stage to screen candidates from
+    pass: "Schedule Phone Screen"
+    fail: "Reviewed"
 ```
 
----
-
-### CR-02: `isDryRun()` reads `LIVE_MODE` but `.env.example` documents `DRY_RUN` — env var naming mismatch
-
-**File:** `src/config/loader.ts:39`, `.env.example:9`
-**Issue:** `isDryRun()` returns `process.env['LIVE_MODE'] !== 'true'`, meaning it is only overridden when `LIVE_MODE=true` is set. However, `.env.example` exposes `DRY_RUN=true` as the operator-facing flag to copy and configure. An operator who reads `.env.example`, copies it to `.env`, and leaves it as-is will have `DRY_RUN=true` in their environment — but `isDryRun()` never reads `DRY_RUN`. Setting `DRY_RUN=false` has zero effect. This creates an operator confusion trap and violates the documented contract. In Phase 4, when live writes are added and the operator expects `DRY_RUN=false` to disable dry-run, the system will silently remain in dry-run mode.
-
-**Fix:** Either (A) remove `DRY_RUN` from `.env.example` and document only `LIVE_MODE`, or (B) update `isDryRun()` to honour `DRY_RUN` as well:
+`src/config/schema.ts`:
 ```typescript
-// Option A (preferred — one flag, one source of truth):
-// .env.example: remove DRY_RUN line entirely; add LIVE_MODE=false comment
-
-// Option B (if DRY_RUN must be supported):
-export function isDryRun(): boolean {
-  if (process.env['LIVE_MODE'] === 'true') return false;
-  if (process.env['DRY_RUN'] === 'false') return false;
-  return true;
-}
+stages: z.object({
+  source: z.string().min(1),
+  pass: z.string().min(1),
+  fail: z.string().min(1),
+}),
 ```
 
----
-
-### CR-03: Placeholder `openingId` passes schema validation — agent runs against invalid job ID with no warning
-
-**File:** `src/config/schema.ts:30`, `config.yaml:7`
-**Issue:** `openingId` is validated as `z.string().min(1)`. The default config ships with `openingId: "REPLACE_WITH_YOUR_JOB_OPENING_ID"` — a 38-character non-empty string that passes this check. The agent will proceed through startup, call `validateStages`, then call `fetchCandidates` with the literal string `"REPLACE_WITH_YOUR_JOB_OPENING_ID"` as the `jobId` query parameter. The BambooHR API will either return an empty list (silent wrong-result) or a 4xx error (caught and exited). In neither case is the operator given an early, actionable error message at config-load time.
-
-**Fix:** Add a `.refine()` to reject placeholder values, or use a pattern check:
+`src/index.ts`:
 ```typescript
-openingId: z.string().min(1).refine(
-  (v) => !v.startsWith('REPLACE_WITH'),
-  { message: 'openingId must be set to a real BambooHR job opening ID' },
-),
-```
-Apply the same pattern to `fieldMap` values that start with `REPLACE_WITH` — at minimum, emit a startup warning distinguishing "placeholder fieldMap (discovery mode)" from "real fieldMap (production mode)" so operators are not confused about which mode they are in.
-
----
-
-## Warnings
-
-### WR-01: Infinite loop risk in `fetchCandidates` if API never sets `paginationComplete`
-
-**File:** `src/bamboohr/client.ts:99-111`
-**Issue:** The pagination loop uses `while (true)` and breaks only when `data.paginationComplete === true`. If the BambooHR API returns a response where `paginationComplete` is absent, always `false`, or returns a truthy non-boolean (e.g., `1`), the loop will run indefinitely. There is no page-count safety limit and no timeout applied to the loop itself. In a Docker container with a daily cron schedule this would hang the container indefinitely.
-
-**Fix:** Add a maximum-page guard:
-```typescript
-const MAX_PAGES = 100; // safety ceiling; tune to your expected data volume
-let page = 1;
-while (page <= MAX_PAGES) {
-  const data = await this.get<ApplicationsResponse>(...);
-  all.push(...data.applications);
-  if (data.paginationComplete) break;
-  page++;
-}
-if (page > MAX_PAGES) {
-  throw new Error(`fetchCandidates: exceeded ${MAX_PAGES} pages — possible infinite loop`);
+const sourceStatus = statuses.find((s) => s.name === config.job.stages.source);
+if (!sourceStatus) {
+  console.error(`[main] Source stage "${config.job.stages.source}" not found in BambooHR.`);
+  process.exit(1);
 }
 ```
+This also lets `validateStages` validate the source stage alongside pass/fail.
 
 ---
 
-### WR-02: `dryRun` variable is computed in `main()` but never gates any behaviour
+### CR-02: `requiredBoolean` evaluator does not handle numeric `0`/`1` — silently fails every candidate
 
-**File:** `src/index.ts:33`
-**Issue:** `const dryRun = isDryRun()` is computed and logged, but nothing in Phase 1 code actually branches on its value. This is expected for Phase 1 (no write paths yet), but the variable is imported and assigned in a way that implies it is actively enforced. When Phase 4 adds write paths, there is no existing guard to copy-paste correctly — the only usage is the startup log message, which is easy to miss as a model for the real guard. This is likely to result in a write path that calls live BambooHR APIs without checking `dryRun`.
-
-**Fix:** Add an explicit no-op guard comment co-located with the write site placeholder, so Phase 4 has an unmissable anchor:
+**File:** `src/rules/evaluator.ts:106-114`
+**Issue:** The boolean coercion logic handles `typeof raw === 'boolean'` and `typeof raw === 'string'`
+but not `typeof raw === 'number'`. BambooHR form answers may be returned as integers (`1` for yes,
+`0` for no). When `raw` is `1` or `0`, neither branch executes, `actual` remains `undefined`, and
+line 114 evaluates `actual === undefined || actual !== expectedValue` as `true`, pushing the failure
+label unconditionally. Every candidate who answered "yes" via a numeric form response will be
+rejected even if their answer satisfies the rule:
 ```typescript
-// PHASE 4: All write operations must be inside this guard.
-// if (!dryRun) {
-//   await client.updateStage(application.id, targetStageId);
-//   await client.postComment(application.id, comment);
-// }
+// raw = 1 (number) — neither branch sets actual:
+if (typeof raw === 'boolean') { ... }       // false
+else if (typeof raw === 'string') { ... }   // false
+// actual is still undefined → rule fails
+```
+
+**Fix:** Add a numeric branch before the string branch:
+```typescript
+if (typeof raw === 'boolean') {
+  actual = raw;
+} else if (typeof raw === 'number') {
+  if (raw === 1) actual = true;
+  else if (raw === 0) actual = false;
+} else if (typeof raw === 'string') {
+  const lower = raw.toLowerCase().trim();
+  if (lower === 'yes' || lower === 'true' || lower === '1') actual = true;
+  else if (lower === 'no' || lower === 'false' || lower === '0') actual = false;
+}
 ```
 
 ---
 
-### WR-03: `hasPlaceholders` detection uses `.every()` — any partially-configured `fieldMap` skips field discovery logging
+### CR-03: `hasPlaceholders` uses `Array.every()` — vacuous truth on empty `fieldMap` triggers discovery log unconditionally; partial config suppresses it
 
 **File:** `src/index.ts:79-82`
-**Issue:** `fieldMapValues.every((v) => v.includes('REPLACE_WITH'))` is true only when ALL values are placeholders. If the operator has configured `salary` and `city` but left `rightToWork` as a placeholder (partial configuration), `.every()` returns `false` and the raw JSON discovery log is suppressed. The operator will not see the raw application JSON that would help them figure out the remaining field path. Additionally, if `fieldMap` is empty (`{}`), `[].every(...)` returns `true` (vacuous truth), causing the raw JSON log to fire even though there are no field-map rules to discover.
+**Issue:** The placeholder detection logic is:
+```typescript
+const fieldMapValues = Object.values(config.fieldMap);
+const hasPlaceholders = fieldMapValues.every((v) => v.includes('REPLACE_WITH'));
+```
+Two failure modes:
 
-**Fix:** Use `.some()` for the "has any placeholder" check, which is the semantically correct condition for triggering discovery logging:
+1. **Empty `fieldMap` (`{}`):** `[].every(fn)` returns `true` in JavaScript (vacuous truth). If
+   `fieldMap` is an empty object, `hasPlaceholders` is `true` and the raw-JSON discovery log fires
+   for every candidate on the first run. There are no placeholder values to discover, so this is
+   a spurious log that pollutes the structured JSON output on stdout.
+
+2. **Partially configured `fieldMap`:** If the operator has set `salary: "questions.2.answer"` and
+   `city: "applicant.address.city"` but left `rightToWork: "REPLACE_WITH_..."`, `.every()` returns
+   `false` (not all values are placeholders), and the discovery log is suppressed. The operator
+   has no way to see the raw JSON to find the remaining `rightToWork` path.
+
+**Fix:** Use `.some()` with an empty-array guard:
 ```typescript
 const hasPlaceholders = fieldMapValues.length > 0 && fieldMapValues.some((v) =>
   v.includes('REPLACE_WITH'),
@@ -164,48 +179,118 @@ const hasPlaceholders = fieldMapValues.length > 0 && fieldMapValues.some((v) =>
 
 ---
 
-### WR-04: `src/config/types.ts` exports `Config` twice under different names — confusion risk
+## Warnings
+
+### WR-01: `fetchCandidates` silently returns incomplete results when `MAX_PAGES` is hit
+
+**File:** `src/bamboohr/client.ts:116-120`
+**Issue:** When the pagination loop reaches `MAX_PAGES` (100) without `paginationComplete`, the
+function logs a `console.error` warning and then **returns** the partial `all` array. The caller
+(`main()`) receives a truncated candidate list without any indication that data is missing — the
+final summary will show a count that appears legitimate. In a high-volume pipeline this is a silent
+data-loss risk: candidates beyond page 100 are never screened.
+
+**Fix:** Throw an error instead of silently returning partial data, so the caller can decide whether
+to abort the run:
+```typescript
+if (page > BambooHRClient.MAX_PAGES) {
+  throw new Error(
+    `fetchCandidates: reached MAX_PAGES (${BambooHRClient.MAX_PAGES}) without paginationComplete — results are incomplete`,
+  );
+}
+```
+If partial processing is intentional, document it explicitly and add the count of fetched vs.
+expected candidates to the log record.
+
+---
+
+### WR-02: `dryRun` is computed in `main()` but never gates any code path
+
+**File:** `src/index.ts:33`
+**Issue:** `const dryRun = isDryRun()` is computed and logged to stderr but there is no conditional
+branch on its value anywhere in the file. Phase 1 has no write paths, so this is by design, but
+the variable is assigned to a constant and used only in a log message. When Phase 4 adds write
+paths, there is no existing guard pattern to anchor the new code against — the risk is that a
+write path is added without consulting `dryRun`.
+
+**Fix:** Add a commented placeholder at the point where writes will be inserted:
+```typescript
+// PHASE 4 — ALL write operations MUST be inside this guard:
+// if (!dryRun) {
+//   await client.updateStage(application.id, targetStageId);
+//   await client.postComment(application.id, reasonComment);
+// } else {
+//   console.error(`[main] DRY_RUN: would move ${application.id} to ${targetStage}`);
+// }
+```
+
+---
+
+### WR-03: `validateStages` makes two network calls at startup — statuses fetched twice
+
+**File:** `src/index.ts:44`, `src/index.ts:51`
+**Issue:** `validateStages()` calls `GET /applicant_tracking/statuses` internally (client.ts:63).
+Then `main()` calls `client.get('/applicant_tracking/statuses')` again at line 51 to resolve the
+source stage ID. This is two identical network calls to the same endpoint at startup, and
+`validateStages()` already has the status list in memory but discards it. Beyond inefficiency,
+this doubles the startup latency and the number of API calls that can fail or rate-limit.
+
+**Fix:** Refactor `validateStages` to return the validated statuses array so the caller can reuse
+it:
+```typescript
+async validateStages(config: Config): Promise<BambooHRStatus[]> {
+  // ... existing logic ...
+  if (hasError) process.exit(1);
+  return statuses; // return for reuse
+}
+```
+Then in `main()`:
+```typescript
+const statuses = await client.validateStages(config);
+const sourceStatus = statuses.find((s) => s.name === config.job.stages.source);
+```
+
+---
+
+### WR-04: `src/config/types.ts` exports `Config` under two names — dead alias creates confusion
 
 **File:** `src/config/types.ts:3-5`
-**Issue:** The file exports the same `Config` type as both `Config` and `AppConfig`:
+**Issue:**
 ```typescript
 export type { Config } from './schema.js';
 export type { Config as AppConfig } from './schema.js';
 ```
-This creates two names for the identical type. Any future code using `AppConfig` will be a different import path from code using `Config`, making refactoring harder and causing reviewer confusion about whether they are the same type. No downstream file currently imports `AppConfig`.
+Both `Config` and `AppConfig` refer to the same type. `AppConfig` is not imported anywhere in the
+codebase. Two names for one type makes it unclear to future contributors which to use, and any
+future refactoring must track both aliases.
 
-**Fix:** Remove the `AppConfig` alias. If a distinct alias is ever needed, add it then with a clear rationale.
+**Fix:** Remove the unused `AppConfig` alias. If a distinct alias is needed in Phase 3 or later,
+add it at that point with a rationale comment.
 
 ---
 
 ## Info
 
-### IN-01: `package.json` specifies `typescript: "^6.0.3"` which does not exist as of the knowledge cutoff
+### IN-01: `config.yaml` has no `source` stage field — makes CR-01 fix require a schema change
 
-**File:** `package.json:21`
-**Issue:** TypeScript's latest stable release as of mid-2025 is in the 5.x series. `^6.0.3` will either fail to resolve during `npm install` or resolve to a future major version with potentially breaking changes. The project should pin to a known-stable version consistent with the `@tsconfig/node22` base (which targets TypeScript 5.x).
+**File:** `config.yaml:8-10`
+**Issue:** `config.yaml` ships with only `pass` and `fail` under `job.stages`. The hardcoded
+`"New"` source stage (CR-01) cannot be made configurable without a schema addition. Noting this
+as a reminder that fixing CR-01 requires a coordinated change across `config.yaml`, `schema.ts`,
+and `index.ts`.
 
-**Fix:**
-```json
-"typescript": "^5.8.0"
+**Fix:** Add `source: "New"` to the `stages` block in `config.yaml` as part of the CR-01 fix:
+```yaml
+job:
+  openingId: "REPLACE_WITH_YOUR_JOB_OPENING_ID"
+  stages:
+    source: "New"
+    pass: "Schedule Phone Screen"
+    fail: "Reviewed"
 ```
-Verify the version available on npm before pinning.
 
 ---
 
-### IN-02: `dotenv` version `^17.4.2` is an unusually high major version — verify against npm
-
-**File:** `package.json:14`
-**Issue:** `dotenv` is at version 16.x as of early 2025. `^17.4.2` is likely a non-existent or future version. If it resolves to a real package it may be a fork or pre-release. This will cause `npm install` to fail in CI or Docker builds.
-
-**Fix:** Pin to the known-stable dotenv release:
-```json
-"dotenv": "^16.4.5"
-```
-Verify against npm before committing.
-
----
-
-_Reviewed: 2026-05-01T00:00:00Z_
+_Reviewed: 2026-05-01T12:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
