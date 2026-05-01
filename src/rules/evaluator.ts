@@ -76,12 +76,13 @@ export function evaluateHardRules(
 
   // --- Rule 2: requiredFields ---
   // Checks that specific application fields are present and non-empty.
-  // "resume" typically checks for a resume file ID being present.
+  // D-07/D-08: Field names are human-readable keys resolved via fieldMap — NOT top-level keys.
+  // "resume" maps to the BambooHR field path via config.fieldMap, same as other rule types.
   if (hardRules.requiredFields !== undefined) {
     const { fields, label } = hardRules.requiredFields;
     let allPresent = true;
     for (const fieldName of fields) {
-      const value = (application as Record<string, unknown>)[fieldName];
+      const value = resolveField(application, fieldName, fieldMap);
       if (value === undefined || value === null || value === '') {
         allPresent = false;
         break;
