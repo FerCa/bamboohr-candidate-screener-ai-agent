@@ -23,7 +23,7 @@ export interface RuleResult {
 export interface CandidateDecision {
   candidateId: number | string;    // applicant.id — for reference/logging
   applicationId: number | string;  // application.id — the BambooHR write entity
-  outcome: 'pass' | 'fail' | 'error';
+  outcome: 'pass' | 'fail' | 'needsReview' | 'error';  // D-07: needsReview added in Phase 2
   reasons: string[];
   timestamp: string;               // ISO 8601
 }
