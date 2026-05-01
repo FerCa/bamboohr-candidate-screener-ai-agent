@@ -10,6 +10,8 @@ import { loadConfig, isDryRun } from './config/loader.js';
 import { BambooHRClient } from './bamboohr/client.js';
 import { evaluateHardRules } from './rules/evaluator.js';
 import { logDecision } from './logger/logger.js';
+import { buildCandidateContext } from './pipeline/extract-cv.js';
+import type { CandidateContext } from './pipeline/types.js';
 
 async function main(): Promise<void> {
   // --- Step 1: Load and validate config ---
@@ -70,6 +72,7 @@ async function main(): Promise<void> {
   let passed = 0;
   let failed = 0;
   let errors = 0;
+  let needsReview = 0;
 
   const fieldMapValues = Object.values(config.fieldMap);
   const hasPlaceholders = fieldMapValues.every((v) => v.includes('REPLACE_WITH'));
@@ -89,17 +92,50 @@ async function main(): Promise<void> {
       // Evaluate all hard rules (collect-all, no LLM)
       const result = evaluateHardRules(config, detail);
 
-      logDecision({
-        candidateId: detail.applicant.id,
-        applicationId: detail.id,
-        outcome: result.outcome,
-        reasons: result.reasons,
-        timestamp: new Date().toISOString(),
-      });
+      if (result.outcome === 'pass') {
+        // Phase 2: Download and extract CV for candidates that passed hard rules.
+        // buildCandidateContext() never throws for recoverable failures — returns needsReviewReason instead.
+        // Unrecoverable failures (network, auth) throw and are caught by the outer try/catch below.
+        const ctx: CandidateContext = await buildCandidateContext(client, detail, result);
+
+        if (ctx.needsReviewReason !== null) {
+          // CV could not be extracted — flag for human review without calling GPT-4o.
+          logDecision({
+            candidateId: detail.applicant.id,
+            applicationId: detail.id,
+            outcome: 'needsReview',
+            reasons: [ctx.needsReviewReason],
+            timestamp: new Date().toISOString(),
+          });
+          needsReview++;
+          processed++;
+          continue;
+        }
+
+        // ctx.cvText is guaranteed non-null here.
+        // Phase 3 will consume ctx for GPT-4o evaluation.
+        // For now: log as pass with a placeholder note.
+        logDecision({
+          candidateId: detail.applicant.id,
+          applicationId: detail.id,
+          outcome: 'pass',
+          reasons: ['CV extracted; pending Phase 3 agent evaluation'],
+          timestamp: new Date().toISOString(),
+        });
+        passed++;
+      } else {
+        // Hard-rule failure — log immediately (same as Phase 1).
+        logDecision({
+          candidateId: detail.applicant.id,
+          applicationId: detail.id,
+          outcome: result.outcome,
+          reasons: result.reasons,
+          timestamp: new Date().toISOString(),
+        });
+        failed++;
+      }
 
       processed++;
-      if (result.outcome === 'pass') passed++;
-      else failed++;
     } catch (err) {
       // SAFE-01: Log error record and continue to next candidate.
       const message = err instanceof Error ? err.message : String(err);
@@ -117,7 +153,7 @@ async function main(): Promise<void> {
 
   // Final summary to stderr (not stdout — stdout is reserved for JSON log lines)
   console.error(
-    `[main] Done. processed=${processed} pass=${passed} fail=${failed} errors=${errors}`,
+    `[main] Done. processed=${processed} pass=${passed} fail=${failed} needsReview=${needsReview} errors=${errors}`,
   );
 }
 
