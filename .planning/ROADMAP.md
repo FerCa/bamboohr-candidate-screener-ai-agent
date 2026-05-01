@@ -37,8 +37,8 @@ Plans:
 - [x] 01-01-PLAN.md — Project scaffold: package.json, tsconfig.json, .gitignore, .env.example, config.yaml
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 01-02-PLAN.md — Config layer: Zod schema, Config types, fail-fast loader (CONF-01, CONF-04)
-- [ ] 01-03-PLAN.md — BambooHR client: auth, stage validation, paginated candidate fetch (BAMB-01, CONF-02)
+- [x] 01-02-PLAN.md — Config layer: Zod schema, Config types, fail-fast loader (CONF-01, CONF-04)
+- [x] 01-03-PLAN.md — BambooHR client: auth, stage validation, paginated candidate fetch (BAMB-01, CONF-02)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 01-04-PLAN.md — Hard-rule evaluator: four rule types, collect-all, fieldMap resolution (RULE-01)
