@@ -1,16 +1,18 @@
 ---
-status: diagnosed
+status: passed
 phase: 02-pdf-pipeline
 source: [02-VERIFICATION.md]
 started: 2026-05-01T21:00:00Z
-updated: 2026-05-01T23:55:00Z
+updated: 2026-05-02T06:00:00Z
 ---
 
 ## Current Test
 
-Run 2 — 2026-05-01 with live credentials after gap-closure plans 02-05 and 02-06:
+Run 4 — 2026-05-02 with live credentials after gap-closure plan 02-07 + GAP-03 fix:
 N candidates processed.
-All 6 still result in needsReview(extraction-failed) — both download paths return 404.
+SC1 CONFIRMED: outcome='pass', reasons=['CV extracted; pending Phase 3 agent evaluation'] for passing candidates.
+1 needsReview(extraction-failed) for one candidate due to HTTP 500 from BambooHR — server-side error on their file, not a code bug.
+Download endpoint confirmed: GET /hiring/api/applications/{applicationId}/files/{resumeFileId}/download
 
 ## Tests
 
