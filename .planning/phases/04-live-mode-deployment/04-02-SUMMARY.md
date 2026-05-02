@@ -1,7 +1,7 @@
 ---
 phase: 04-live-mode-deployment
 plan: 02
-status: checkpoint — awaiting human docker build verification
+status: complete
 subsystem: infrastructure
 tags: [docker, multi-stage-build, infra, security, non-root]
 dependency_graph:
@@ -24,8 +24,8 @@ metrics:
   duration: "~5 minutes"
   completed_at: "2026-05-02T08:38:28Z"
   tasks_total: 3
-  tasks_completed: 2
-  tasks_pending: 1
+  tasks_completed: 3
+  tasks_pending: 0
 requirements_satisfied: [INFRA-01]
 ---
 
@@ -33,7 +33,7 @@ requirements_satisfied: [INFRA-01]
 
 **One-liner:** Multi-stage node:22-alpine Dockerfile with non-root screener user, exec-form ENTRYPOINT, and .dockerignore keeping secrets/host artifacts out of the image.
 
-**Status:** PARTIAL — Tasks 1 and 2 complete. Task 3 (human-verify docker build) is a blocking checkpoint awaiting operator action.
+**Status:** COMPLETE — All 3 tasks verified.
 
 ## What Was Built
 
@@ -85,11 +85,18 @@ Files intentionally NOT excluded (build stage requires them):
 
 No other deviations — plan executed as written.
 
-## Pending: Task 3 (Human-Verify Checkpoint)
+## Task 3: Human Verification — Passed
 
-The `docker build` command was NOT run by this agent. The Docker daemon was not running during research (RESEARCH.md), and Docker Desktop requires manual startup. Task 3 is a blocking human-verify checkpoint.
+`docker build` executed and verified by operator on 2026-05-02:
 
-See **Checkpoint Details** section below for the exact verification steps.
+| Check | Result |
+|-------|--------|
+| `docker build -t bamboohr-screener:latest .` | ✓ Both stages completed, named to `docker.io/library/bamboohr-screener:latest` |
+| Entrypoint | `[node dist/index.js]` ✓ |
+| User | `screener` ✓ |
+| Image size | 93,313,382 bytes (~89MB) ✓ |
+| `docker run --rm` with no config | Exits 1 with `[config] Failed to read or parse config file: ./config.yaml` ✓ |
+| Secrets in image layers | `no secrets in image — OK` ✓ |
 
 ## Self-Check
 
