@@ -23,6 +23,7 @@ const requiredKeywordRuleSchema = z.object({
   field: z.string().min(1),
   expectedValue: z.string().min(1),
   label: z.string().min(1),
+  nullBehavior: z.enum(['pass', 'fail']).optional().default('fail'),
 });
 
 // Phase 3: D-01 — each soft rule entry has a human-readable label and a GPT-4o

@@ -122,11 +122,12 @@ export function evaluateHardRules(
   // D-08: Human-readable field names resolved via fieldMap.
   if (hardRules.requiredKeyword !== undefined) {
     for (const rule of hardRules.requiredKeyword) {
-      const { field, expectedValue, label } = rule;
+      const { field, expectedValue, label, nullBehavior = 'fail' } = rule;
       const raw = resolveField(application, field, fieldMap);
 
       if (raw === undefined || raw === null) {
-        reasons.push(label);
+        if (nullBehavior === 'fail') reasons.push(label);
+        // nullBehavior === 'pass': field absent → skip rule, candidate passes
       } else {
         const actual = String(raw).toLowerCase().trim();
         const expected = expectedValue.toLowerCase().trim();
