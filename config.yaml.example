@@ -1,0 +1,51 @@
+# BambooHR Candidate Screener — Configuration
+# Copy this file to config.yaml and fill in your values.
+# config.yaml is gitignored — never commit real credentials or internal IDs.
+# Mount config.yaml into the Docker container via volume (see README).
+
+job:
+  openingId: "YOUR_JOB_OPENING_ID"   # BambooHR job opening ID (visible in the URL when editing the job)
+  stages:
+    intake: "New"                     # Stage to fetch candidates from
+    pass: "Schedule Phone Screen"     # Stage to move passing candidates to
+    fail: "Reviewed"                  # Stage to move failing/needsReview candidates to
+
+hardRules:
+  maxSalary:
+    value: 100000
+    label: "Salary above ceiling"
+  requiredFields:
+    fields:
+      - resume
+    label: "CV not attached"
+  requiredBoolean:
+    - field: rightToWork
+      expectedValue: true
+      label: "Must meet local right-to-work requirements"
+  requiredKeyword:
+    - field: address
+      expectedValue: "YourCountry"
+      label: "Must be based in the required location"
+      nullBehavior: pass              # pass = treat null/missing field as passing this rule
+
+# fieldMap: maps human-readable rule field names -> BambooHR API response paths.
+# Populate these after running DRY_RUN=true and logging one raw application JSON.
+# Example paths (verify against your actual API response):
+#   "questionsAndAnswers.0.answer.label" — first custom form question answer label
+#   "applicant.address.city" — standard applicant city field
+fieldMap:
+  rightToWork: "REPLACE_WITH_PATH"
+  city: "REPLACE_WITH_PATH"
+  address: "REPLACE_WITH_PATH"
+  salary: "REPLACE_WITH_PATH"
+  resume: "REPLACE_WITH_PATH"
+
+softRules:
+  required:
+    - label: "Required criterion 1"
+      description: "Describe what the candidate must demonstrate in their CV for this to pass"
+    - label: "Required criterion 2"
+      description: "Describe what the candidate must demonstrate in their CV for this to pass"
+  optional:
+    - label: "Nice-to-have criterion 1"
+      description: "Describe a bonus skill or experience that is a plus but not required"

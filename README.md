@@ -15,9 +15,11 @@ unless `LIVE_MODE=true` is explicitly set.
 ## Quick Start
 
 ```bash
-# 1. Copy the env template and fill in real values
+# 1. Copy both templates and fill in real values
 cp .env.example .env
+cp config.yaml.example config.yaml
 # Edit .env with your BAMBOOHR_API_KEY, BAMBOOHR_SUBDOMAIN, OPENAI_API_KEY
+# Edit config.yaml with your job opening ID, stage names, rules, and field paths
 
 # 2. Run the setup script
 ./install.sh
@@ -103,7 +105,7 @@ The `:ro` flag makes the mount read-only — the container never writes to the c
 
 ## Configuration
 
-Edit `config.yaml` in the project root (or your own copy mounted at `/app/config.yaml`).
+Edit `config.yaml` in the project root (copied from `config.yaml.example`, gitignored).
 See `config.yaml` for the full schema; key sections:
 
 - `job.openingId` — BambooHR job opening ID this run targets
@@ -255,7 +257,7 @@ permission in BambooHR Settings → API Keys before flipping `LIVE_MODE=true`.
 ├── Dockerfile                  # Multi-stage node:22-alpine build
 ├── .dockerignore               # Build context exclusions
 ├── install.sh                  # Post-clone setup — Docker check, env validation, image build, cron
-├── config.yaml                 # Rules + stage configuration (operator-edited)
+├── config.yaml.example         # Rules + stage config template — copy to config.yaml and fill in values
 ├── .env.example                # Credentials template — copy to .env and fill in values
 └── .planning/                  # GSD planning artifacts (excluded from Docker image)
 ```
