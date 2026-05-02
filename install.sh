@@ -53,7 +53,7 @@ echo "[ok] Docker image built"
 
 # 5. Register cron job (idempotent — removes previous entry first)
 CRON_CMD="0 11 * * * docker run --rm --env-file ${ENV_FILE} -v ${CONFIG_FILE}:/app/config.yaml ${IMAGE_NAME}"
-(crontab -l 2>/dev/null | grep -v "${IMAGE_NAME}"; echo "${CRON_CMD}") | crontab -
+(crontab -l 2>/dev/null | grep -v "${IMAGE_NAME}" || true; echo "${CRON_CMD}") | crontab -
 echo "[ok] Cron job registered: daily at 11:00 AM"
 
 echo ""
