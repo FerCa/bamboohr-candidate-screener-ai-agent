@@ -94,7 +94,21 @@ Cross-cutting constraints: pdf-parse@1.1.4 pinned exactly (no caret); ESM `.js` 
   2. The agent run for a single candidate terminates within 5 tool turns; no candidate run loops indefinitely
   3. A GPT-4o response that cannot be parsed as the expected schema logs the candidate as `needsReview` rather than crashing the run
   4. In dry-run mode, zero stage transitions and zero comments are written to BambooHR, confirmed by absence of any BambooHR write API calls in the log
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+
+**Wave 1** *(parallel — no shared files)*
+- [ ] 03-01-PLAN.md — Install @openai/agents SDK, extend configSchema with optional softRules, add softRules block to config.yaml (RULE-02, SAFE-02)
+- [ ] 03-02-PLAN.md — Type contracts: src/agent/types.ts with EvaluationOutputSchema (Zod) + EvaluationResult interface using z.infer<> (single source of truth) (RULE-02, BAMB-02, BAMB-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 03-03-PLAN.md — Agent core: src/agent/prompt.ts (pure-function builders) + src/agent/evaluator.ts (Agent + run + maxTurns:5 + MaxTurnsExceededError handling + softRules-absent short-circuit) (RULE-02, SAFE-02, BAMB-02, BAMB-03)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 03-04-PLAN.md — Wire Phase 3: add logEvaluation to src/logger/logger.ts; replace placeholder logDecision in src/index.ts pass branch with evaluateSoftRules + logEvaluation; counters reflect soft-evaluation outcomes (RULE-02, SAFE-02, BAMB-02, BAMB-03)
+
+Cross-cutting constraints: @openai/agents@0.8.x with Zod v4 peer dep (already satisfied); model: 'gpt-4o' MUST be specified explicitly (default is gpt-4.1); maxTurns: 5 cap on every run() call (SAFE-02); MaxTurnsExceededError → needsReview, all other errors re-throw to outer SAFE-01 handler; ESM .js imports throughout; zero BambooHR writes in Phase 3 (Phase 4 owns writes).
 
 ### Phase 4: Live Mode & Deployment
 **Goal**: Production-ready container that writes real stage transitions and comments to BambooHR when `LIVE_MODE=true`, builds and runs cleanly as a `node:22-alpine` Docker image, and has a documented cron entry for daily execution
@@ -116,5 +130,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Executing (verifying) | - |
 | 2. PDF Pipeline | 4/6 | Gap closure in progress | - |
-| 3. Agent Evaluation | 0/TBD | Not started | - |
+| 3. Agent Evaluation | 0/4 | Planned | - |
 | 4. Live Mode & Deployment | 0/TBD | Not started | - |
