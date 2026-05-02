@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Foundation** - Config validation, BambooHR client, hard-rule pre-filter, and dry-run logging in place
 - [ ] **Phase 2: PDF Pipeline** - CV download, text extraction, content validation, and candidate context ready for agent input
-- [ ] **Phase 3: Agent Evaluation** - GPT-4o soft evaluation via OpenAI Agents SDK with dry-run end-to-end flow complete
+- [x] **Phase 3: Agent Evaluation** - GPT-4o soft evaluation via OpenAI Agents SDK with dry-run end-to-end flow complete
 - [ ] **Phase 4: Live Mode & Deployment** - Production-ready Docker image, live-mode writes enabled, cron wiring documented
 
 ## Phase Details
@@ -128,7 +128,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 6/6 | Executing (verifying) | - |
-| 2. PDF Pipeline | 4/6 | Gap closure in progress | - |
-| 3. Agent Evaluation | 0/4 | Planned | - |
+| 1. Foundation | 6/6 | Complete | 2026-05-01 |
+| 2. PDF Pipeline | 6/7 | Complete (02-07 gap deferred) | 2026-05-01 |
+| 3. Agent Evaluation | 4/4 | Complete | 2026-05-02 |
 | 4. Live Mode & Deployment | 0/TBD | Not started | - |

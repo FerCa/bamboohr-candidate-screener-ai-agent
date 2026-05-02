@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 3 all plans complete — verifying
-last_updated: "2026-05-02T10:30:00.000Z"
-last_activity: 2026-05-02 -- Phase 03 all 4 plans complete
+stopped_at: Phase 4 — ready to plan
+last_updated: "2026-05-02T07:51:00.000Z"
+last_activity: 2026-05-02 -- Phase 03 complete, human UAT passed
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 17
   completed_plans: 17
-  percent: 100
+  percent: 75
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-01)
 
 **Core value:** Eliminate manual first-pass screening — recruiters only see candidates who already cleared the objective criteria
-**Current focus:** Phase 3 — Agent Evaluation
+**Current focus:** Phase 4 — Live Mode & Deployment
 
 ## Current Position
 
-Phase: 3 of 4 (Agent Evaluation)
-Plan: 4 of 4 in current phase
-Status: All plans complete — verification pending
-Last activity: 2026-05-02 -- Phase 03 all 4 plans complete (03-01, 03-02, 03-03, 03-04)
+Phase: 4 of 4 (Live Mode & Deployment)
+Plan: 0 of TBD in current phase
+Status: Phase 3 complete — ready to plan Phase 4
+Last activity: 2026-05-02 -- Phase 03 complete, human UAT passed (EvaluationResult JSON confirmed, hard-rule isolation confirmed)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -71,9 +71,8 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 1: Verify BambooHR API variant (legacy vs. newer Hiring API) before writing the client — endpoint paths differ
-- Phase 3: Verify `@openai/agents` current npm version and `tool()` / `Runner.run()` / `maxTurns` API shape before writing agent code
 - Pre-deployment: GDPR — signed DPA with OpenAI and candidate consent disclosure required before `LIVE_MODE=true` against real candidates (cannot be resolved in code)
+- Phase 3 open: CR-01 (evaluateSoftRules called in dry-run), CR-02 (needsReview in EvaluationOutputSchema), CR-03 (OPENAI_API_KEY not validated at startup) — tracked in 03-REVIEW.md, recommend gap plan before Phase 4 live-mode work
 
 ## Deferred Items
 
