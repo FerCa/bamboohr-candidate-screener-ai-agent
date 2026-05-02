@@ -15,21 +15,26 @@ unless `LIVE_MODE=true` is explicitly set.
 ## Quick Start
 
 ```bash
-# 1. Build the image
-docker build -t bamboohr-screener:latest .
+# 1. Copy the env template and fill in real values
+cp .env.example .env
+# Edit .env with your BAMBOOHR_API_KEY, BAMBOOHR_SUBDOMAIN, OPENAI_API_KEY
 
-# 2. Copy the env template and fill in real values
-cp .env.example /etc/screener.env
-# then edit /etc/screener.env with your real BAMBOOHR_API_KEY, BAMBOOHR_SUBDOMAIN, OPENAI_API_KEY
-
-# 3. Dry-run against the live BambooHR API (still no writes — LIVE_MODE is unset by default)
-docker run --rm \
-  --env-file /etc/screener.env \
-  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
-  bamboohr-screener:latest
-
-# 4. When ready to go live, set LIVE_MODE=true in /etc/screener.env (see Compliance below first)
+# 2. Run the setup script
+./install.sh
 ```
+
+`install.sh` checks for Docker, validates your `.env`, builds the image, and registers a daily cron job at 11:00 AM. That's the full setup.
+
+To run manually at any time:
+
+```bash
+docker run --rm \
+  --env-file .env \
+  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+  bamboohr-screener
+```
+
+When ready to go live, uncomment `LIVE_MODE=true` in your `.env` (see [Compliance](#compliance) first).
 
 The final stdout line of every run is a JSON summary:
 
@@ -59,9 +64,9 @@ in exec form so the process is PID 1 and receives `SIGTERM` cleanly from `docker
 |---|---|---|---|
 | `BAMBOOHR_API_KEY` | yes | — | BambooHR Basic-auth username. Must have ATS settings access for the write endpoints (`postComment`, `moveStage`). Exits 1 if unset. |
 | `BAMBOOHR_SUBDOMAIN` | yes | — | Your BambooHR company subdomain (e.g. `acme` for `acme.bamboohr.com`). Exits 1 if unset. |
-| `OPENAI_API_KEY` | yes (live runs) | — | Used by `@openai/agents` for soft-rule evaluation. Not consulted in dry-run (CR-01 fix). |
+| `OPENAI_API_KEY` | yes | — | Used by `@openai/agents` for soft-rule evaluation. Required at startup — the container exits 1 if unset, even in dry-run. |
 | `LIVE_MODE` | no | unset | Set to the literal string `true` to enable BambooHR writes AND OpenAI calls. Any other value (including absent) keeps dry-run. |
-| `CONFIG_PATH` | no | `./config.yaml` | Path inside the container. Set to `/app/config.yaml` when mounting via `-v`. |
+| `CONFIG_PATH` | no | `./config.yaml` | Path to the YAML config inside the container. The default `./config.yaml` resolves to `/app/config.yaml` (the container's working directory), so you only need to set this if you mount the config to a non-standard path. |
 
 Secrets are passed via `--env-file` at `docker run` time (see [Cron Setup](#cron-setup)) —
 NEVER baked into the image with `ENV` directives, NEVER passed inline as `-e KEY=value` in
@@ -82,8 +87,8 @@ The `:ro` flag makes the mount read-only — the container never writes to the c
 **Dry-run** (default — `LIVE_MODE` unset or any value other than `"true"`):
 - Fetches candidates from BambooHR
 - Evaluates hard rules deterministically
-- Downloads CV PDFs and extracts text (Phase 2)
-- SKIPS the OpenAI soft-rule evaluation (CR-01 — synthesizes a placeholder result)
+- Downloads CV PDFs and extracts text
+- SKIPS the OpenAI soft-rule evaluation (synthesizes a deterministic placeholder result — no API call made)
 - SKIPS all BambooHR write calls (`postComment`, `moveStage`)
 - Logs every candidate decision as JSON to stdout
 - Emits the INFRA-03 summary line as the final stdout line
@@ -118,7 +123,22 @@ candidate is processed.
 The container is designed to be triggered by an external cron (no internal scheduler).
 Each run processes all currently-`intake`-stage candidates and exits.
 
-### macOS
+### Recommended: use `install.sh`
+
+Running `./install.sh` registers the cron entry automatically. It schedules a daily run at
+**11:00 AM** using the `.env` and `config.yaml` files in the project root:
+
+```cron
+0 11 * * * docker run --rm --env-file /path/to/project/.env -v /path/to/project/config.yaml:/app/config.yaml bamboohr-screener
+```
+
+`install.sh` does not add log redirection. If you want to keep a log file, edit the cron
+entry with `crontab -e` and append `>> /var/log/screener.log 2>&1`.
+
+The following sections describe **manual setup** for cases where you need a custom schedule,
+a different env file location, or can't run `install.sh`.
+
+### Manual setup — macOS
 
 1. Save your secrets to `/etc/screener.env` (or any path the cron user can read):
 
@@ -168,7 +188,7 @@ Each run processes all currently-`intake`-stage candidates and exits.
    If the last line of any run is NOT a parseable JSON object with those five keys, the
    run failed before completing the loop. Check the lines above for the error.
 
-### Linux server
+### Manual setup — Linux server
 
 The same `docker run` command works on any Linux host with Docker installed. The only
 differences from the macOS instructions:
@@ -225,17 +245,18 @@ permission in BambooHR Settings → API Keys before flipping `LIVE_MODE=true`.
 ```
 .
 ├── src/
-│   ├── index.ts                # Entry point — startup, candidate loop, write guards (Phase 4)
+│   ├── index.ts                # Entry point — startup, candidate loop, write guards
 │   ├── bamboohr/client.ts      # BambooHR REST client — get, post, postComment, moveStage
 │   ├── config/                 # YAML schema (Zod) + fail-fast loader
 │   ├── rules/                  # Hard-rule evaluator + types
 │   ├── pipeline/               # PDF download + text extraction
 │   ├── agent/                  # @openai/agents soft-rule evaluator
 │   └── logger/                 # JSON-line decision/evaluation loggers
-├── Dockerfile                  # Multi-stage node:22-alpine build (Phase 4)
-├── .dockerignore               # Build context exclusions (Phase 4)
+├── Dockerfile                  # Multi-stage node:22-alpine build
+├── .dockerignore               # Build context exclusions
+├── install.sh                  # Post-clone setup — Docker check, env validation, image build, cron
 ├── config.yaml                 # Rules + stage configuration (operator-edited)
-├── .env.example                # Template for /etc/screener.env
+├── .env.example                # Credentials template — copy to .env and fill in values
 └── .planning/                  # GSD planning artifacts (excluded from Docker image)
 ```
 

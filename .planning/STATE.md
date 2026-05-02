@@ -5,7 +5,7 @@ milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-02)
 last_updated: "2026-05-02T13:51:24.709Z"
-last_activity: 2026-05-02 -- Phase 04 execution started
+last_activity: 2026-05-02 -- Completed quick task 260502-i99: Update README
 progress:
   total_phases: 4
   completed_phases: 4
@@ -84,6 +84,12 @@ None yet.
 | BambooHR | BAMB-05: Exponential backoff retry on 429/5xx | v2 | Init |
 | Config | CONF-05: Multi-job per-job configuration | v2 | Init |
 | Infra | INFRA-05: Slack webhook run summary | v2 | Init |
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260502-i99 | Update README — install.sh setup path, fix env var docs, cron section, dry-run section | 2026-05-02 | — | [260502-i99-update-readme](./quick/260502-i99-update-readme/) |
 
 ## Session Continuity
 
