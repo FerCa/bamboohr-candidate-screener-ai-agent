@@ -106,7 +106,7 @@ Plans:
 - [x] 03-03-PLAN.md — Agent core: src/agent/prompt.ts (pure-function builders) + src/agent/evaluator.ts (Agent + run + maxTurns:5 + MaxTurnsExceededError handling + softRules-absent short-circuit) (RULE-02, SAFE-02, BAMB-02, BAMB-03)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 03-04-PLAN.md — Wire Phase 3: add logEvaluation to src/logger/logger.ts; replace placeholder logDecision in src/index.ts pass branch with evaluateSoftRules + logEvaluation; counters reflect soft-evaluation outcomes (RULE-02, SAFE-02, BAMB-02, BAMB-03)
+- [x] 03-04-PLAN.md — Wire Phase 3: add logEvaluation to src/logger/logger.ts; replace placeholder logDecision in src/index.ts pass branch with evaluateSoftRules + logEvaluation; counters reflect soft-evaluation outcomes (RULE-02, SAFE-02, BAMB-02, BAMB-03)
 
 Cross-cutting constraints: @openai/agents@0.8.x with Zod v4 peer dep (already satisfied); model: 'gpt-4o' MUST be specified explicitly (default is gpt-4.1); maxTurns: 5 cap on every run() call (SAFE-02); MaxTurnsExceededError → needsReview, all other errors re-throw to outer SAFE-01 handler; ESM .js imports throughout; zero BambooHR writes in Phase 3 (Phase 4 owns writes).
 
