@@ -12,6 +12,8 @@ import { evaluateHardRules } from './rules/evaluator.js';
 import { logDecision } from './logger/logger.js';
 import { buildCandidateContext } from './pipeline/extract-cv.js';
 import type { CandidateContext } from './pipeline/types.js';
+import { evaluateSoftRules } from './agent/evaluator.js';
+import { logEvaluation } from './logger/logger.js';
 
 async function main(): Promise<void> {
   // --- Step 1: Load and validate config ---
@@ -116,16 +118,24 @@ async function main(): Promise<void> {
         }
 
         // ctx.cvText is guaranteed non-null here.
-        // Phase 3 will consume ctx for GPT-4o evaluation.
-        // For now: log as pass with a placeholder note.
-        logDecision({
-          candidateId: detail.applicant.id,
-          applicationId: detail.id,
-          outcome: 'pass',
-          reasons: ['CV extracted; pending Phase 3 agent evaluation'],
-          timestamp: new Date().toISOString(),
-        });
-        passed++;
+        // Phase 3: GPT-4o soft evaluation via @openai/agents SDK (RULE-02, SAFE-02).
+        // evaluateSoftRules() returns EvaluationResult for ALL outcomes:
+        //   - GPT-4o pass/fail        → outcome: 'pass' | 'fail'
+        //   - MaxTurnsExceededError   → outcome: 'needsReview'  (caught inside evaluator)
+        //   - softRules absent/empty  → outcome: 'pass' (short-circuit, no API call)
+        // Network / auth errors re-throw and are caught by the outer try/catch below
+        // (logged as CandidateDecision{outcome:'error'} per SAFE-01).
+        const evalResult = await evaluateSoftRules(ctx, config.softRules);
+        logEvaluation(evalResult);
+
+        if (evalResult.outcome === 'pass') {
+          passed++;
+        } else if (evalResult.outcome === 'fail') {
+          failed++;
+        } else {
+          // 'needsReview' — recoverable agent failure (max turns, parse error)
+          needsReview++;
+        }
       } else {
         // Hard-rule failure — log immediately (same as Phase 1).
         logDecision({
