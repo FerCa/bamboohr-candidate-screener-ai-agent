@@ -1,4 +1,4 @@
-# BambooHR Candidate Screener
+# BambooHR Candidate Screener AI Agent
 
 TypeScript + OpenAI Agents SDK agent that screens BambooHR job candidates daily.
 See `.planning/PROJECT.md` for full project context and `.planning/ROADMAP.md` for phase structure.

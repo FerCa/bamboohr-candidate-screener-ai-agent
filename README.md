@@ -1,4 +1,4 @@
-# BambooHR Candidate Screener
+# BambooHR Candidate Screener AI Agent
 
 Automated daily screening agent that monitors a BambooHR job opening for new candidates,
 evaluates them against YAML-defined rules (hard rules deterministically, soft rules via
