@@ -99,8 +99,8 @@ Cross-cutting constraints: pdf-parse@1.1.4 pinned exactly (no caret); ESM `.js` 
 Plans:
 
 **Wave 1** *(parallel — no shared files)*
-- [ ] 03-01-PLAN.md — Install @openai/agents SDK, extend configSchema with optional softRules, add softRules block to config.yaml (RULE-02, SAFE-02)
-- [ ] 03-02-PLAN.md — Type contracts: src/agent/types.ts with EvaluationOutputSchema (Zod) + EvaluationResult interface using z.infer<> (single source of truth) (RULE-02, BAMB-02, BAMB-03)
+- [x] 03-01-PLAN.md — Install @openai/agents SDK, extend configSchema with optional softRules, add softRules block to config.yaml (RULE-02, SAFE-02)
+- [x] 03-02-PLAN.md — Type contracts: src/agent/types.ts with EvaluationOutputSchema (Zod) + EvaluationResult interface using z.infer<> (single source of truth) (RULE-02, BAMB-02, BAMB-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 03-03-PLAN.md — Agent core: src/agent/prompt.ts (pure-function builders) + src/agent/evaluator.ts (Agent + run + maxTurns:5 + MaxTurnsExceededError handling + softRules-absent short-circuit) (RULE-02, SAFE-02, BAMB-02, BAMB-03)
