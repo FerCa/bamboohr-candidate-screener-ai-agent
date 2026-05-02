@@ -103,7 +103,7 @@ Plans:
 - [x] 03-02-PLAN.md — Type contracts: src/agent/types.ts with EvaluationOutputSchema (Zod) + EvaluationResult interface using z.infer<> (single source of truth) (RULE-02, BAMB-02, BAMB-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 03-03-PLAN.md — Agent core: src/agent/prompt.ts (pure-function builders) + src/agent/evaluator.ts (Agent + run + maxTurns:5 + MaxTurnsExceededError handling + softRules-absent short-circuit) (RULE-02, SAFE-02, BAMB-02, BAMB-03)
+- [x] 03-03-PLAN.md — Agent core: src/agent/prompt.ts (pure-function builders) + src/agent/evaluator.ts (Agent + run + maxTurns:5 + MaxTurnsExceededError handling + softRules-absent short-circuit) (RULE-02, SAFE-02, BAMB-02, BAMB-03)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 03-04-PLAN.md — Wire Phase 3: add logEvaluation to src/logger/logger.ts; replace placeholder logDecision in src/index.ts pass branch with evaluateSoftRules + logEvaluation; counters reflect soft-evaluation outcomes (RULE-02, SAFE-02, BAMB-02, BAMB-03)
