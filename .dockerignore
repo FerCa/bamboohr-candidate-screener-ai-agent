@@ -1,0 +1,24 @@
+# Host artifacts that must not enter the image.
+
+# macOS-built node_modules is ABI-incompatible with Alpine; rebuilt via npm ci inside Docker.
+node_modules/
+
+# TypeScript build output from the host; rebuilt inside the build stage.
+dist/
+
+# Secrets — never baked into the image. Use --env-file at docker run time (D-06).
+.env
+.env.*
+!.env.example
+
+# Repo metadata, planning docs, and project-level files with no runtime value.
+.git/
+.gitignore
+.nvmrc
+.planning/
+.claude/
+*.md
+
+# Container build files themselves.
+Dockerfile
+.dockerignore
