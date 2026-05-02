@@ -57,6 +57,57 @@ export class BambooHRClient {
   }
 
   /**
+   * Generic authenticated POST request.
+   * Sets Accept and Content-Type to application/json (BambooHR defaults to XML without Accept).
+   * Throws on non-2xx — caller's per-candidate try/catch handles it.
+   */
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: this.authHeader,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      throw new Error(
+        `BambooHR API error: HTTP ${res.status} ${res.statusText} on POST ${path}`,
+      );
+    }
+    return res.json() as Promise<T>;
+  }
+
+  /**
+   * BAMB-03: Post a recruiter-visible comment on an application.
+   * Endpoint: POST /applicant_tracking/applications/{applicationId}/comments
+   * Body: { type: "comment", comment: <text> }
+   * [CITED: documentation.bamboohr.com/reference/post-application-comment]
+   */
+  async postComment(applicationId: number, comment: string): Promise<void> {
+    await this.post<unknown>(
+      `/applicant_tracking/applications/${applicationId}/comments`,
+      { type: 'comment', comment },
+    );
+  }
+
+  /**
+   * BAMB-02: Move an application to a new pipeline stage.
+   * Endpoint: POST /applicant_tracking/applications/{applicationId}/status
+   * Body: { status: <stageId integer> }
+   * stageId comes from stageMap built by validateStages() — no extra API call.
+   * [CITED: documentation.bamboohr.com/reference/update-applicant-status]
+   */
+  async moveStage(applicationId: number, stageId: number): Promise<void> {
+    await this.post<unknown>(
+      `/applicant_tracking/applications/${applicationId}/status`,
+      { status: stageId },
+    );
+  }
+
+  /**
    * CONF-02: Fetch live pipeline stages and compare against config stage names.
    * Exits with code 1 if any configured stage name is not found in the live API.
    * Call this once at startup, before the candidate loop.
