@@ -113,13 +113,25 @@ Cross-cutting constraints: @openai/agents@0.8.x with Zod v4 peer dep (already sa
 ### Phase 4: Live Mode & Deployment
 **Goal**: Production-ready container that writes real stage transitions and comments to BambooHR when `LIVE_MODE=true`, builds and runs cleanly as a `node:22-alpine` Docker image, and has a documented cron entry for daily execution
 **Depends on**: Phase 3
-**Requirements**: INFRA-01, INFRA-03, INFRA-04
+**Requirements**: INFRA-01, INFRA-03, INFRA-04 (also activates BAMB-02 + BAMB-03 — write APIs first implemented here)
 **Success Criteria** (what must be TRUE):
   1. `docker build` completes without error and `docker run --rm` with valid env vars and mounted config processes candidates and exits with code 0
   2. With `LIVE_MODE=true`, candidates are moved to the correct BambooHR pipeline stage and receive a comment listing the decision criteria
   3. The final line of every run is a JSON summary object containing `processed`, `pass`, `fail`, `needsReview`, and `errors` counts
   4. The README contains a copy-paste-ready macOS crontab entry and a note on deploying the same command to a Linux server
 **UI hint**: no
+**Plans**: 3 plans
+
+Plans:
+
+**Wave 1** *(parallel — no shared files)*
+- [ ] 04-01-PLAN.md — TypeScript code changes: BambooHRClient.postComment + moveStage; comment-then-move write guards in src/index.ts for soft-eval, hard-rule fail (D-05), and needsReview (D-01/D-02); CR-01 dry-run guard for OpenAI; INFRA-03 JSON summary on stdout (BAMB-02, BAMB-03, INFRA-03)
+- [ ] 04-02-PLAN.md — Docker packaging: multi-stage `node:22-alpine` Dockerfile (non-root user, exec-form ENTRYPOINT) and `.dockerignore` (excludes node_modules, .env, dist, .planning, .git); ends with human-verify checkpoint for `docker build` (Docker daemon not running at research time) (INFRA-01)
+
+**Wave 2** *(blocked on Wave 1 — README references Dockerfile structure and image name)*
+- [ ] 04-03-PLAN.md — README.md with Quick Start, Build, Run (dry-run + LIVE_MODE), Configuration, Cron Setup (macOS + Linux), Operating Notes, Compliance (GDPR DPA + ATS API permission); copy-paste cron line using --env-file (D-06) and -v config mount (D-07/D-08) (INFRA-04)
+
+Cross-cutting constraints: ESM `.js` imports preserved; `LIVE_MODE=true` required for writes (default: dry-run); `applicationId` (not `applicantId`) used for all `postComment` and `moveStage` calls; comment-then-move atomicity enforced — no half-written state (D-03/D-04); secrets via `--env-file` only (D-06); config via `-v` volume mount (D-07).
 
 ## Progress
 
@@ -131,4 +143,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. Foundation | 6/6 | Complete | 2026-05-01 |
 | 2. PDF Pipeline | 6/7 | Complete (02-07 gap deferred) | 2026-05-01 |
 | 3. Agent Evaluation | 4/4 | Complete | 2026-05-02 |
-| 4. Live Mode & Deployment | 0/TBD | Not started | - |
+| 4. Live Mode & Deployment | 0/3 | Not started | - |

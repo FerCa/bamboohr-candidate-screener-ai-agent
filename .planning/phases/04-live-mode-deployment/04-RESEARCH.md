@@ -559,22 +559,25 @@ function buildNeedsReviewComment(reason: string): string {
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **INFRA-03: Keep or remove the human-readable stderr summary line?**
+1. **INFRA-03: Keep or remove the human-readable stderr summary line?** *(RESOLVED in Plan 04-01 Task 2)*
    - What we know: Current line 169 is `console.error('[main] Done. processed=...')`. INFRA-03 requires a JSON summary on stdout. CONTEXT.md says replace — not add alongside.
    - What's unclear: Whether operators want both (human-readable stderr + machine-readable stdout) or just the JSON stdout line.
    - Recommendation: Keep the human-readable `console.error` line AND add the JSON `console.log` line. No information is lost; the JSON line satisfies INFRA-03. The planner can confirm with the user if the `console.error` line should be removed.
+   - **Resolution:** Plan 04-01 Task 2 keeps the `console.error` line and adds `console.log(JSON.stringify({ processed, pass: passed, fail: failed, needsReview, errors }))` immediately after.
 
-2. **Field name `pass` vs `passed` in INFRA-03 summary object?**
+2. **Field name `pass` vs `passed` in INFRA-03 summary object?** *(RESOLVED in Plan 04-01 Task 2)*
    - What we know: INFRA-03 spec says `{processed, pass, fail, needsReview, errors}`. Current variable in `index.ts` is `passed` (line 72), not `pass`. The CONTEXT.md discretion item says `console.log(JSON.stringify({processed, pass, fail, needsReview, errors}))`.
    - What's unclear: Whether the JSON key should be `pass` (matching INFRA-03 spec) or `passed` (matching the local variable name).
    - Recommendation: Use `pass` as the JSON key to match the spec: `{ processed, pass: passed, fail: failed, needsReview, errors }`. The variable rename can be optional.
+   - **Resolution:** Plan 04-01 Task 2 uses `{ processed, pass: passed, fail: failed, needsReview, errors }` — JSON key `pass` matches INFRA-03 spec; maps from local variable `passed`.
 
-3. **BambooHR write API permission requirement**
+3. **BambooHR write API permission requirement** *(RESOLVED in Plan 04-03 Task 1)*
    - What we know: Both write endpoints require "the owner of the API key used must have access to ATS settings."
    - What's unclear: Whether the existing API key used for Phase 1–3 reads has this permission level.
    - Recommendation: Document in the README that the API key must have ATS settings access. This is a configuration step for the user, not a code task.
+   - **Resolution:** Plan 04-03 Task 1 README includes an "API Key Permissions" section under Operating Notes documenting that the API key must have ATS settings access.
 
 ---
 
