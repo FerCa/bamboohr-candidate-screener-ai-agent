@@ -27,9 +27,16 @@ async function main(): Promise<void> {
   // CONF-03: Credentials via env vars only — never in config or code.
   const apiKey = process.env['BAMBOOHR_API_KEY'];
   const subdomain = process.env['BAMBOOHR_SUBDOMAIN'];
+  const openaiApiKey = process.env['OPENAI_API_KEY'];
 
-  if (!apiKey || !subdomain) {
-    console.error('[main] Missing required environment variables: BAMBOOHR_API_KEY, BAMBOOHR_SUBDOMAIN');
+  const missingVars = [
+    !apiKey && 'BAMBOOHR_API_KEY',
+    !subdomain && 'BAMBOOHR_SUBDOMAIN',
+    !openaiApiKey && 'OPENAI_API_KEY',
+  ].filter(Boolean);
+
+  if (missingVars.length > 0) {
+    console.error(`[main] Missing required environment variables: ${missingVars.join(', ')}`);
     console.error('[main] Copy .env.example to .env and fill in your credentials.');
     process.exit(1);
   }
@@ -41,7 +48,7 @@ async function main(): Promise<void> {
   console.error(`[main] Job opening: ${config.job.openingId}`);
 
   // --- Step 3: Connect to BambooHR and run startup checks ---
-  const client = new BambooHRClient(subdomain, apiKey);
+  const client = new BambooHRClient(subdomain!, apiKey!);
 
   // CONF-02: Validate that configured stage names exist in the live API.
   // validateStages() exits with code 1 if any stage name is not found.

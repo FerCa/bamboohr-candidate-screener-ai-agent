@@ -41,7 +41,7 @@ export const EvaluationOutputSchema = z.object({
   required: z.array(CriterionResultSchema),
   optional: z.array(CriterionResultSchema),
   comment: z.string(),
-  outcome: z.enum(['pass', 'fail', 'needsReview']),
+  outcome: z.enum(['pass', 'fail']),
 });
 
 /**
