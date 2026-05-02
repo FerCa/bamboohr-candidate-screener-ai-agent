@@ -25,6 +25,24 @@ const requiredKeywordRuleSchema = z.object({
   label: z.string().min(1),
 });
 
+// Phase 3: D-01 — each soft rule entry has a human-readable label and a GPT-4o
+// evaluation description. Mirrors the hard-rule label pattern.
+const softRuleEntrySchema = z.object({
+  label: z.string().min(1),
+  description: z.string().min(1),
+});
+
+// Phase 3: D-02 — softRules splits into `required` (dealbreakers) and `optional`
+// (nice-to-haves). Both arrays default to [] when absent so consumers can iterate
+// without null checks. The wrapping z.object is itself .optional() so existing
+// configs without a softRules block remain valid (backward-compatible).
+const softRulesSchema = z
+  .object({
+    required: z.array(softRuleEntrySchema).optional().default([]),
+    optional: z.array(softRuleEntrySchema).optional().default([]),
+  })
+  .optional();
+
 export const configSchema = z.object({
   job: z.object({
     openingId: z
@@ -55,6 +73,9 @@ export const configSchema = z.object({
       { message: 'hardRules must contain at least one rule' },
     ),
   fieldMap: z.record(z.string(), z.string()),
+  // Phase 3: optional soft-rule criteria for GPT-4o evaluation (D-01, D-02).
+  // Absent → Phase 3 logs candidates as 'pass' with comment 'No soft rules configured'.
+  softRules: softRulesSchema,
 });
 
 export type Config = z.infer<typeof configSchema>;
