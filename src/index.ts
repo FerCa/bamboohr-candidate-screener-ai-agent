@@ -13,6 +13,7 @@ import { logDecision } from './logger/logger.js';
 import { buildCandidateContext } from './pipeline/extract-cv.js';
 import type { CandidateContext } from './pipeline/types.js';
 import { evaluateSoftRules } from './agent/evaluator.js';
+import type { EvaluationResult } from './agent/types.js';
 import { logEvaluation } from './logger/logger.js';
 
 async function main(): Promise<void> {
@@ -112,6 +113,23 @@ async function main(): Promise<void> {
             reasons: [ctx.needsReviewReason],
             timestamp: new Date().toISOString(),
           });
+          // D-01/D-02: needsReview candidates are moved to the fail/reviewed stage with
+          // a NEEDS REVIEW header so recruiters see consistent comment structure.
+          if (!dryRun) {
+            const needsReviewComment = [
+              'NEEDS REVIEW — Automated screening incomplete',
+              ctx.needsReviewReason,
+              '[Auto-screened by AI — final decision rests with recruiter]',
+            ].join('\n\n');
+            const reviewedStageId = stageMap.get(config.job.stages.fail);
+            if (reviewedStageId === undefined) {
+              throw new Error(
+                `[write] Reviewed stage "${config.job.stages.fail}" not found in stageMap`,
+              );
+            }
+            await client.postComment(detail.id, needsReviewComment);
+            await client.moveStage(detail.id, reviewedStageId);
+          }
           needsReview++;
           processed++;
           continue;
@@ -125,8 +143,43 @@ async function main(): Promise<void> {
         //   - softRules absent/empty  → outcome: 'pass' (short-circuit, no API call)
         // Network / auth errors re-throw and are caught by the outer try/catch below
         // (logged as CandidateDecision{outcome:'error'} per SAFE-01).
-        const evalResult = await evaluateSoftRules(ctx, config.softRules);
+        // CR-01: Dry-run must not call the OpenAI API. In dry-run, synthesize a
+        // deterministic EvaluationResult so the rest of the loop (logEvaluation,
+        // counters) behaves identically without any external call.
+        let evalResult: EvaluationResult;
+        if (dryRun) {
+          evalResult = {
+            applicationId: ctx.applicationId,
+            applicantId: ctx.applicantId,
+            outcome: 'pass',
+            required: [],
+            optional: [],
+            comment: '[DRY_RUN] Soft evaluation skipped — no API call made.',
+            timestamp: new Date().toISOString(),
+          };
+        } else {
+          evalResult = await evaluateSoftRules(ctx, config.softRules);
+        }
         logEvaluation(evalResult);
+
+        // D-03/D-04: Comment-then-move atomicity. Comment posts FIRST; only on success
+        // does the stage move proceed. If either throws, the outer try/catch increments
+        // errors and the candidate stays in intake for the next cron run.
+        // D-01: 'fail' AND 'needsReview' both go to the fail/reviewed stage.
+        if (!dryRun) {
+          const targetStageName =
+            evalResult.outcome === 'pass'
+              ? config.job.stages.pass
+              : config.job.stages.fail;
+          const targetStageId = stageMap.get(targetStageName);
+          if (targetStageId === undefined) {
+            throw new Error(
+              `[write] Target stage "${targetStageName}" not found in stageMap`,
+            );
+          }
+          await client.postComment(evalResult.applicationId, evalResult.comment);
+          await client.moveStage(evalResult.applicationId, targetStageId);
+        }
 
         if (evalResult.outcome === 'pass') {
           passed++;
@@ -145,6 +198,23 @@ async function main(): Promise<void> {
           reasons: result.reasons,
           timestamp: new Date().toISOString(),
         });
+        // D-05: Hard-rule fails ALSO trigger BambooHR writes in LIVE_MODE — moved to
+        // the reviewed stage with a comment listing the unmet rules. Same atomicity.
+        if (!dryRun) {
+          const hardRuleComment = [
+            'FAIL — Hard rules',
+            result.reasons.map((r) => `• ${r}`).join('\n'),
+            '[Auto-screened by AI — final decision rests with recruiter]',
+          ].join('\n\n');
+          const failStageId = stageMap.get(config.job.stages.fail);
+          if (failStageId === undefined) {
+            throw new Error(
+              `[write] Fail stage "${config.job.stages.fail}" not found in stageMap`,
+            );
+          }
+          await client.postComment(detail.id, hardRuleComment);
+          await client.moveStage(detail.id, failStageId);
+        }
         failed++;
       }
 
@@ -167,6 +237,11 @@ async function main(): Promise<void> {
   // Final summary to stderr (not stdout — stdout is reserved for JSON log lines)
   console.error(
     `[main] Done. processed=${processed} pass=${passed} fail=${failed} needsReview=${needsReview} errors=${errors}`,
+  );
+  // INFRA-03: machine-readable JSON summary on stdout — final line of the run.
+  // Cron health monitoring can detect successful completion by parsing this line.
+  console.log(
+    JSON.stringify({ processed, pass: passed, fail: failed, needsReview, errors }),
   );
 }
 
