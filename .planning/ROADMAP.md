@@ -125,11 +125,11 @@ Cross-cutting constraints: @openai/agents@0.8.x with Zod v4 peer dep (already sa
 Plans:
 
 **Wave 1** *(parallel — no shared files)*
-- [ ] 04-01-PLAN.md — TypeScript code changes: BambooHRClient.postComment + moveStage; comment-then-move write guards in src/index.ts for soft-eval, hard-rule fail (D-05), and needsReview (D-01/D-02); CR-01 dry-run guard for OpenAI; INFRA-03 JSON summary on stdout (BAMB-02, BAMB-03, INFRA-03)
-- [ ] 04-02-PLAN.md — Docker packaging: multi-stage `node:22-alpine` Dockerfile (non-root user, exec-form ENTRYPOINT) and `.dockerignore` (excludes node_modules, .env, dist, .planning, .git); ends with human-verify checkpoint for `docker build` (Docker daemon not running at research time) (INFRA-01)
+- [x] 04-01-PLAN.md — TypeScript code changes: BambooHRClient.postComment + moveStage; comment-then-move write guards in src/index.ts for soft-eval, hard-rule fail (D-05), and needsReview (D-01/D-02); CR-01 dry-run guard for OpenAI; INFRA-03 JSON summary on stdout (BAMB-02, BAMB-03, INFRA-03)
+- [x] 04-02-PLAN.md — Docker packaging: multi-stage `node:22-alpine` Dockerfile (non-root user, exec-form ENTRYPOINT) and `.dockerignore` (excludes node_modules, .env, dist, .planning, .git); ends with human-verify checkpoint for `docker build` (Docker daemon not running at research time) (INFRA-01)
 
 **Wave 2** *(blocked on Wave 1 — README references Dockerfile structure and image name)*
-- [ ] 04-03-PLAN.md — README.md with Quick Start, Build, Run (dry-run + LIVE_MODE), Configuration, Cron Setup (macOS + Linux), Operating Notes, Compliance (GDPR DPA + ATS API permission); copy-paste cron line using --env-file (D-06) and -v config mount (D-07/D-08) (INFRA-04)
+- [x] 04-03-PLAN.md — README.md with Quick Start, Build, Run (dry-run + LIVE_MODE), Configuration, Cron Setup (macOS + Linux), Operating Notes, Compliance (GDPR DPA + ATS API permission); copy-paste cron line using --env-file (D-06) and -v config mount (D-07/D-08) (INFRA-04)
 
 Cross-cutting constraints: ESM `.js` imports preserved; `LIVE_MODE=true` required for writes (default: dry-run); `applicationId` (not `applicantId`) used for all `postComment` and `moveStage` calls; comment-then-move atomicity enforced — no half-written state (D-03/D-04); secrets via `--env-file` only (D-06); config via `-v` volume mount (D-07).
 
