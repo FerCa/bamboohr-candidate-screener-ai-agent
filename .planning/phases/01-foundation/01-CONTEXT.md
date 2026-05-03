@@ -42,7 +42,7 @@ hardRules:
   requiredKeyword:
     - field: city
       expectedValue: "YourCity"
-      label: "Must be YourCity-based"
+      label: "Must be based in the required location"
 
 fieldMap:
   rightToWork: "customField_???"   # researcher to fill in actual BambooHR field ID

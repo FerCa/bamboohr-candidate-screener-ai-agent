@@ -20,7 +20,7 @@ result: PASS — Three EvaluationResult lines produced (applicationId X fail, Y 
 ### 2. Hard-rule fail isolation
 expected: Candidates who fail hard rules produce only a `CandidateDecision` log line with `outcome: 'fail'`. No `EvaluationResult` line is emitted for them — `evaluateSoftRules` is never called.
 
-result: PASS — Most candidates failed hard rules (YourCity-based, salary ceiling). All produced only CandidateDecision lines with `reasons[]`. No EvaluationResult lines emitted for any of them. Three candidates cleared hard rules and received GPT-4o evaluation.
+result: PASS — Most candidates failed hard rules (location and salary rules). All produced only CandidateDecision lines with `reasons[]`. No EvaluationResult lines emitted for any of them. A small number of candidates cleared hard rules and received GPT-4o evaluation.
 
 ### 3. MaxTurnsExceededError recovery
 expected: When the agent loop exceeds 5 turns (can be simulated by temporarily setting `maxTurns: 1`), `evaluateSoftRules` returns an `EvaluationResult` with `outcome: 'needsReview'` and the run continues to the next candidate without an unhandled exception.

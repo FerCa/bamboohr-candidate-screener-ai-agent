@@ -9,7 +9,7 @@ updated: 2026-05-02T06:00:00Z
 ## Current Test
 
 Run 4 — 2026-05-02 with live credentials after gap-closure plan 02-07 + GAP-03 fix:
-N candidates processed.
+N candidates processed, M fail (hard rules), K pass (CV extracted), 1 needsReview.
 SC1 CONFIRMED: outcome='pass', reasons=['CV extracted; pending Phase 3 agent evaluation'] for passing candidates.
 1 needsReview(extraction-failed) for one candidate due to HTTP 500 from BambooHR — server-side error on their file, not a code bug.
 Download endpoint confirmed: GET /hiring/api/applications/{applicationId}/files/{resumeFileId}/download
