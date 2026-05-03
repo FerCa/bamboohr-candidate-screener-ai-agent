@@ -148,7 +148,7 @@ Cross-cutting constraints: ESM `.js` imports preserved; `LIVE_MODE=true` require
 Plans:
 
 **Wave 1**
-- [ ] 05-01-PLAN.md — Foundation: install vitest + vitest.config.ts; create ConfigError + StageValidationError classes; create IBambooHRClient + ISoftEvaluator + ILogger interfaces (D-05, D-08, D-09)
+- [x] 05-01-PLAN.md — Foundation: install vitest + vitest.config.ts; create ConfigError + StageValidationError classes; create IBambooHRClient + ISoftEvaluator + ILogger interfaces (D-05, D-08, D-09)
 
 **Wave 2** *(parallel — no shared files; both depend only on Plan 01)*
 - [ ] 05-02-PLAN.md — Refactor existing modules: loader.ts throws ConfigError; client.ts throws StageValidationError + rename `all`→`applications`; logger.ts becomes JsonLogger class; evaluator.ts becomes SoftEvaluator class + rename `out`→`agentOutput` (D-05, D-06, D-08, D-12)
