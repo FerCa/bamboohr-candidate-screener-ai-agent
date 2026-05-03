@@ -133,10 +133,36 @@ Plans:
 
 Cross-cutting constraints: ESM `.js` imports preserved; `LIVE_MODE=true` required for writes (default: dry-run); `applicationId` (not `applicantId`) used for all `postComment` and `moveStage` calls; comment-then-move atomicity enforced — no half-written state (D-03/D-04); secrets via `--env-file` only (D-06); config via `-v` volume mount (D-07).
 
+### Phase 5: Clean Code & SOLID Refactor
+**Goal**: Refactor the entire codebase to follow clean code principles and SOLID design — improve separation of concerns, eliminate code smells, apply single-responsibility throughout, and ensure the architecture is maintainable and extensible for v2 features
+**Depends on**: Phase 4
+**Requirements**: (none — structural refactor; success criteria below cover the contract)
+**Success Criteria** (what must be TRUE):
+  1. Each module has a single, clearly-named responsibility with no cross-cutting concerns bleeding across boundaries
+  2. All functions and classes are open for extension but closed for modification — new rules, stages, or output channels can be added without touching existing logic
+  3. Dependencies flow inward — BambooHR client, OpenAI agent, and logger are injected or abstracted behind interfaces, not imported directly in business logic
+  4. All existing dry-run and live-mode behavior is preserved end-to-end after the refactor
+  5. TypeScript strict mode passes with no `any` casts introduced
+**Plans**: 4 plans
+
+Plans:
+
+**Wave 1**
+- [ ] 05-01-PLAN.md — Foundation: install vitest + vitest.config.ts; create ConfigError + StageValidationError classes; create IBambooHRClient + ISoftEvaluator + ILogger interfaces (D-05, D-08, D-09)
+
+**Wave 2** *(parallel — no shared files; both depend only on Plan 01)*
+- [ ] 05-02-PLAN.md — Refactor existing modules: loader.ts throws ConfigError; client.ts throws StageValidationError + rename `all`→`applications`; logger.ts becomes JsonLogger class; evaluator.ts becomes SoftEvaluator class + rename `out`→`agentOutput` (D-05, D-06, D-08, D-12)
+- [ ] 05-03-PLAN.md — Extract pure utilities + tests: CommentBuilder static class; LiveModeWriter atomicity owner; evaluateHardRules + CommentBuilder unit tests (D-03, D-04, D-10, D-11)
+
+**Wave 3** *(blocked on Waves 1 and 2 — restores compile after Plan 02 breakage)*
+- [ ] 05-04-PLAN.md — Integrate: CandidateProcessor (per-candidate pipeline) + ScreeningPipeline (orchestrator); rewrite src/index.ts as thin wiring; CandidateProcessor + ScreeningPipeline integration tests (D-01, D-02, D-08, D-11)
+
+Cross-cutting constraints: zero `any` casts in production code; `process.exit` exists ONLY in src/index.ts (loader.ts and client.ts throw named errors instead); ESM `.js` imports on every new file; full descriptive variable names per D-12 (`bambooHrClient`, `applicationDetail`, `candidateContext`, `applications`, `agentOutput`, `hardRuleResult`); no `implements` keyword on concrete classes (TypeScript structural typing satisfies interfaces implicitly per D-05); end-to-end dry-run and live-mode behavior preserved (locked by 4 vitest test files).
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -144,3 +170,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 2. PDF Pipeline | 6/7 | Complete (02-07 gap deferred) | 2026-05-01 |
 | 3. Agent Evaluation | 4/4 | Complete | 2026-05-02 |
 | 4. Live Mode & Deployment | 3/3 | Complete | 2026-05-02 |
+| 5. Clean Code & SOLID Refactor | 0/4 | Planned | — |
