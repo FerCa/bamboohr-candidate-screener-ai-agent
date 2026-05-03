@@ -151,8 +151,8 @@ Plans:
 - [x] 05-01-PLAN.md — Foundation: install vitest + vitest.config.ts; create ConfigError + StageValidationError classes; create IBambooHRClient + ISoftEvaluator + ILogger interfaces (D-05, D-08, D-09)
 
 **Wave 2** *(parallel — no shared files; both depend only on Plan 01)*
-- [ ] 05-02-PLAN.md — Refactor existing modules: loader.ts throws ConfigError; client.ts throws StageValidationError + rename `all`→`applications`; logger.ts becomes JsonLogger class; evaluator.ts becomes SoftEvaluator class + rename `out`→`agentOutput` (D-05, D-06, D-08, D-12)
-- [ ] 05-03-PLAN.md — Extract pure utilities + tests: CommentBuilder static class; LiveModeWriter atomicity owner; evaluateHardRules + CommentBuilder unit tests (D-03, D-04, D-10, D-11)
+- [x] 05-02-PLAN.md — Refactor existing modules: loader.ts throws ConfigError; client.ts throws StageValidationError + rename `all`→`applications`; logger.ts becomes JsonLogger class; evaluator.ts becomes SoftEvaluator class + rename `out`→`agentOutput` (D-05, D-06, D-08, D-12)
+- [x] 05-03-PLAN.md — Extract pure utilities + tests: CommentBuilder static class; LiveModeWriter atomicity owner; evaluateHardRules + CommentBuilder unit tests (D-03, D-04, D-10, D-11)
 
 **Wave 3** *(blocked on Waves 1 and 2 — restores compile after Plan 02 breakage)*
 - [ ] 05-04-PLAN.md — Integrate: CandidateProcessor (per-candidate pipeline) + ScreeningPipeline (orchestrator); rewrite src/index.ts as thin wiring; CandidateProcessor + ScreeningPipeline integration tests (D-01, D-02, D-08, D-11)
