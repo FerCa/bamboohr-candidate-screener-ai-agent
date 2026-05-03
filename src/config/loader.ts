@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 import { configSchema } from './schema.js';
 import type { Config } from './schema.js';
+import { ConfigError } from './errors.js';
 
 export function loadConfig(configPath: string): Config {
   // Step 1: Read YAML from disk
@@ -16,18 +17,18 @@ export function loadConfig(configPath: string): Config {
     raw = yaml.load(fileContent);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[config] Failed to read or parse config file: ${configPath}`);
-    console.error(`[config] Error: ${message}`);
-    process.exit(1);
+    throw new ConfigError(
+      `Failed to read or parse config file "${configPath}": ${message}`,
+    );
   }
 
   // Step 2: Validate schema with Zod safeParse
   const result = configSchema.safeParse(raw);
   if (!result.success) {
-    console.error(`[config] Invalid configuration in: ${configPath}`);
-    console.error('[config] Validation errors:');
-    console.error(JSON.stringify(result.error.format(), null, 2));
-    process.exit(1);
+    const details = JSON.stringify(result.error.format(), null, 2);
+    throw new ConfigError(
+      `Invalid configuration in "${configPath}":\n${details}`,
+    );
   }
 
   return result.data;
