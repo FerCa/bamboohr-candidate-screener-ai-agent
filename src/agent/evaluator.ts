@@ -1,6 +1,6 @@
 // src/agent/evaluator.ts
 // Soft-rule evaluation orchestrator.
-// Constructs an OpenAI Agents SDK Agent with model:'gpt-4o' (Pitfall #1 — default is gpt-4.1)
+// Constructs an OpenAI Agents SDK Agent with model:'gpt-4.1' and outputType: EvaluationOutputSchema,
 // and outputType: EvaluationOutputSchema, then calls run() with maxTurns:5 (SAFE-02).
 //
 // Recoverable-vs-rethrow split (same pattern as src/pipeline/extract-cv.ts lines 79-86):
@@ -61,10 +61,10 @@ export async function evaluateSoftRules(
   });
   const userMessage = buildUserMessage(ctx);
 
-  // (C) Construct Agent — model MUST be 'gpt-4o' explicitly (Pitfall #1: default is gpt-4.1)
+  // (C) Construct Agent — model: 'gpt-4.1' explicit; better instruction following than gpt-4o
   const agent = new Agent({
     name: 'Candidate Evaluator',
-    model: 'gpt-4o',
+    model: 'gpt-4.1',
     instructions: systemPrompt,
     outputType: EvaluationOutputSchema,
   });
