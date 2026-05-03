@@ -93,25 +93,25 @@ The `:ro` flag makes the mount read-only — the container never writes to the c
 - SKIPS the OpenAI soft-rule evaluation (synthesizes a deterministic placeholder result — no API call made)
 - SKIPS all BambooHR write calls (`postComment`, `moveStage`)
 - Logs every candidate decision as JSON to stdout
-- Emits the INFRA-03 summary line as the final stdout line
+- Emits the JSON summary line as the final stdout line
 
 **LIVE_MODE=true:**
 - All of the above, PLUS:
 - Calls `@openai/agents` to evaluate soft rules with GPT-4o for candidates that passed hard rules
-- Posts a recruiter comment on every processed application (D-04 — pass, fail, needsReview)
+- Posts a recruiter comment on every processed application (pass, fail, and needsReview)
 - Moves the candidate to the configured pass/fail pipeline stage
-- Hard-rule fails are also moved (to the fail/reviewed stage) with a `FAIL — Hard rules` comment (D-05)
-- Comment is posted BEFORE the stage move; if the comment POST fails, the stage move is NOT attempted (D-03 atomicity)
+- Hard-rule fails are also moved (to the fail stage) with a `FAIL — Hard rules` comment
+- Comment is posted BEFORE the stage move; if the comment POST fails, the stage move is NOT attempted (atomicity guarantee)
 
 ## Configuration
 
 Edit `config.yaml` in the project root (copied from `config.yaml.example`, gitignored).
-See `config.yaml` for the full schema; key sections:
+See `config.yaml.example` for the full schema; key sections:
 
 - `job.openingId` — BambooHR job opening ID this run targets
 - `job.stages.intake` — pipeline stage name fetched from
 - `job.stages.pass` — destination stage for soft-eval pass
-- `job.stages.fail` — destination stage for fail, hard-rule fail, AND needsReview (per D-01)
+- `job.stages.fail` — destination stage for fail, hard-rule fail, AND needsReview
 - `hardRules` — deterministic pre-filter (salary ceiling, required fields, boolean / keyword)
 - `softRules.required` and `softRules.optional` — GPT-4o evaluation criteria
 - `fieldMap` — maps logical field names to BambooHR API JSON paths
@@ -218,7 +218,7 @@ differences from the macOS instructions:
   behind.
 - **Health detection:** parse the final line of stdout for the JSON summary
   (`{"processed":...,"errors":N}`). If `errors > 0`, the run had per-candidate failures
-  that did not abort the loop (SAFE-01 isolation). If the JSON line is missing entirely,
+  that did not abort the loop (each candidate is error-isolated). If the JSON line is missing entirely,
   the run aborted before completion.
 - **First-run discovery:** if `config.yaml` `fieldMap` contains `REPLACE_WITH...`
   placeholders, the container logs the application detail JSON structure on the first

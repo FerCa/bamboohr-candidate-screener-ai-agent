@@ -12,8 +12,8 @@ Build a cron-triggered Docker container that automates first-pass screening of B
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation** - Config validation, BambooHR client, hard-rule pre-filter, and dry-run logging in place
-- [ ] **Phase 2: PDF Pipeline** - CV download, text extraction, content validation, and candidate context ready for agent input
+- [x] **Phase 1: Foundation** - Config validation, BambooHR client, hard-rule pre-filter, and dry-run logging in place
+- [x] **Phase 2: PDF Pipeline** - CV download, text extraction, content validation, and candidate context ready for agent input
 - [x] **Phase 3: Agent Evaluation** - GPT-4o soft evaluation via OpenAI Agents SDK with dry-run end-to-end flow complete
 - [x] **Phase 4: Live Mode & Deployment** - Production-ready Docker image, live-mode writes enabled, cron wiring documented
 
