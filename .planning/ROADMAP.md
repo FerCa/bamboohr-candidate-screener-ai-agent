@@ -155,7 +155,7 @@ Plans:
 - [x] 05-03-PLAN.md — Extract pure utilities + tests: CommentBuilder static class; LiveModeWriter atomicity owner; evaluateHardRules + CommentBuilder unit tests (D-03, D-04, D-10, D-11)
 
 **Wave 3** *(blocked on Waves 1 and 2 — restores compile after Plan 02 breakage)*
-- [ ] 05-04-PLAN.md — Integrate: CandidateProcessor (per-candidate pipeline) + ScreeningPipeline (orchestrator); rewrite src/index.ts as thin wiring; CandidateProcessor + ScreeningPipeline integration tests (D-01, D-02, D-08, D-11)
+- [x] 05-04-PLAN.md — Integrate: CandidateProcessor (per-candidate pipeline) + ScreeningPipeline (orchestrator); rewrite src/index.ts as thin wiring; CandidateProcessor + ScreeningPipeline integration tests (D-01, D-02, D-08, D-11)
 
 Cross-cutting constraints: zero `any` casts in production code; `process.exit` exists ONLY in src/index.ts (loader.ts and client.ts throw named errors instead); ESM `.js` imports on every new file; full descriptive variable names per D-12 (`bambooHrClient`, `applicationDetail`, `candidateContext`, `applications`, `agentOutput`, `hardRuleResult`); no `implements` keyword on concrete classes (TypeScript structural typing satisfies interfaces implicitly per D-05); end-to-end dry-run and live-mode behavior preserved (locked by 4 vitest test files).
 
