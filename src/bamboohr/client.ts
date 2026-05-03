@@ -9,7 +9,12 @@ import type {
   BambooHRStatus,
   ApplicationsResponse,
 } from './types.js';
+import { StageValidationError } from './errors.js';
 
+/**
+ * BambooHR ATS API client.
+ * Structurally satisfies IBambooHRClient (no `implements` keyword needed — D-05).
+ */
 export class BambooHRClient {
   private readonly baseUrl: string;
   private readonly hiringBaseUrl: string;
@@ -119,8 +124,9 @@ export class BambooHRClient {
       statuses = await this.get<BambooHRStatus[]>('/applicant_tracking/statuses');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[bamboohr] Failed to fetch pipeline stages: ${message}`);
-      process.exit(1);
+      throw new StageValidationError(
+        `Failed to fetch pipeline stages: ${message}`,
+      );
     }
 
     const nameSet = new Set(statuses.map((s) => s.name));
@@ -138,7 +144,9 @@ export class BambooHRClient {
     }
 
     if (hasError) {
-      process.exit(1);
+      throw new StageValidationError(
+        `One or more configured stage names were not found in BambooHR. Available stages: ${available}`,
+      );
     }
 
     // Return Map<stageName, stageId> — consumed by index.ts to avoid duplicate API call (WR-03)
@@ -198,7 +206,7 @@ export class BambooHRClient {
     jobId: string,
     statusId: string,
   ): Promise<BambooHRApplication[]> {
-    const all: BambooHRApplication[] = [];
+    const applications: BambooHRApplication[] = [];
     let page = 1;
 
     while (page <= BambooHRClient.MAX_PAGES) {
@@ -210,7 +218,7 @@ export class BambooHRClient {
           page: String(page),
         },
       );
-      all.push(...data.applications);
+      applications.push(...data.applications);
       if (data.paginationComplete) break;
       page++;
     }
@@ -221,6 +229,6 @@ export class BambooHRClient {
       );
     }
 
-    return all;
+    return applications;
   }
 }
