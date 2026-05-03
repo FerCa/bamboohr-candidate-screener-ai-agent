@@ -1,30 +1,33 @@
 // src/index.ts
-// Entry point for the BambooHR Candidate Screener.
-// Startup sequence: dotenv → loadConfig → BambooHR startup checks → candidate loop.
-// DRY_RUN=true is default (CONF-04); no writes in Phase 1.
+// Entry point for the BambooHR Candidate Screener (post-Phase-5 thin wiring).
+// Responsibilities (D-01):
+//   1. Load .env (dotenv MUST be the first import — loads before any env var read).
+//   2. Load + validate config (throws ConfigError on failure — D-08, D-09).
+//   3. Read credentials from env vars (CONF-03 — never from config).
+//   4. Construct injected dependencies (Phase-5 success criterion #3).
+//   5. Hand off to ScreeningPipeline.run().
+//   6. Catch named errors at the top level — single allowed process.exit point (D-08).
 
-// D-11: dotenv/config MUST be the first import — loads .env before any env var reads
+// dotenv/config MUST be the first import — it loads .env BEFORE any env var reads
 import 'dotenv/config';
 
 import { loadConfig, isDryRun } from './config/loader.js';
+import { ConfigError } from './config/errors.js';
 import { BambooHRClient } from './bamboohr/client.js';
-import { evaluateHardRules } from './rules/evaluator.js';
-import { logDecision } from './logger/logger.js';
-import { buildCandidateContext } from './pipeline/extract-cv.js';
-import type { CandidateContext } from './pipeline/types.js';
-import { evaluateSoftRules } from './agent/evaluator.js';
-import type { EvaluationResult } from './agent/types.js';
-import { logEvaluation } from './logger/logger.js';
+import { StageValidationError } from './bamboohr/errors.js';
+import { JsonLogger } from './logger/logger.js';
+import { SoftEvaluator } from './agent/evaluator.js';
+import { LiveModeWriter } from './pipeline/live-mode-writer.js';
+import { CandidateProcessor } from './pipeline/candidate-processor.js';
+import { ScreeningPipeline } from './screener/screening-pipeline.js';
 
 async function main(): Promise<void> {
-  // --- Step 1: Load and validate config ---
-  // CONF-01: loadConfig() exits with code 1 if config is invalid.
-  // Credentials are NOT in config — they come from env vars below.
+  // CONF-01: loadConfig throws ConfigError on YAML or schema failure (D-08)
   const configPath = process.env['CONFIG_PATH'] ?? './config.yaml';
   const config = loadConfig(configPath);
+  console.error(`[main] Config: ${configPath}`);
 
-  // --- Step 2: Read credentials from env vars ---
-  // CONF-03: Credentials via env vars only — never in config or code.
+  // CONF-03: credentials via env vars only — never in config or code
   const apiKey = process.env['BAMBOOHR_API_KEY'];
   const subdomain = process.env['BAMBOOHR_SUBDOMAIN'];
   const openaiApiKey = process.env['OPENAI_API_KEY'];
@@ -36,224 +39,47 @@ async function main(): Promise<void> {
   ].filter(Boolean);
 
   if (missingVars.length > 0) {
-    console.error(`[main] Missing required environment variables: ${missingVars.join(', ')}`);
+    console.error(
+      `[main] Missing required environment variables: ${missingVars.join(', ')}`,
+    );
     console.error('[main] Copy .env.example to .env and fill in your credentials.');
     process.exit(1);
   }
 
-  // CONF-04: Dry-run mode logged at startup so every run is self-documenting.
+  // Construct dependencies — order matters: leaf first, orchestrator last.
+  const bambooHrClient = new BambooHRClient(subdomain!, apiKey!);
+  const softEvaluator = new SoftEvaluator();
+  const jsonLogger = new JsonLogger();
+  const liveWriter = new LiveModeWriter(bambooHrClient);
   const dryRun = isDryRun();
-  console.error(`[main] Mode: ${dryRun ? 'DRY_RUN (no writes)' : 'LIVE MODE — writes enabled'}`);
-  console.error(`[main] Config: ${configPath}`);
-  console.error(`[main] Job opening: ${config.job.openingId}`);
-
-  // --- Step 3: Connect to BambooHR and run startup checks ---
-  const client = new BambooHRClient(subdomain!, apiKey!);
-
-  // CONF-02: Validate that configured stage names exist in the live API.
-  // validateStages() exits with code 1 if any stage name is not found.
-  console.error('[main] Validating pipeline stages against BambooHR...');
-  // Capture stageMap — also validates all stage names exist (exits 1 on failure).
-  const stageMap = await client.validateStages(config);
-  console.error('[main] Pipeline stages validated.');
-
-  // --- Step 4: Fetch candidates in the intake stage ---
-  // Resolve intake stage ID from the stageMap — no second API call needed (WR-03).
-  const intakeStageName = config.job.stages.intake;
-  const intakeId = stageMap.get(intakeStageName);
-  if (intakeId === undefined) {
-    console.error(`[main] Intake stage "${intakeStageName}" not found in stageMap. This should not happen if validateStages passed.`);
-    process.exit(1);
-  }
-
-  console.error(`[main] Fetching candidates from stage: ${intakeStageName} (id=${intakeId})`);
-  const candidates = await client.fetchCandidates(
-    config.job.openingId,
-    String(intakeId),
+  const candidateProcessor = new CandidateProcessor(
+    bambooHrClient,
+    softEvaluator,
+    jsonLogger,
+    liveWriter,
+    config,
+    dryRun,
   );
-  console.error(`[main] Found ${candidates.length} candidate(s) in "${intakeStageName}" stage.`);
-
-  // --- Step 5: Process each candidate ---
-  // SAFE-01: Per-candidate try/catch — one failure does not abort the run.
-  let processed = 0;
-  let passed = 0;
-  let failed = 0;
-  let errors = 0;
-  let needsReview = 0;
-
-  const fieldMapValues = Object.values(config.fieldMap);
-  const hasPlaceholders =
-    fieldMapValues.length === 0 ||
-    fieldMapValues.some((v) => v.includes('REPLACE_WITH'));
-
-  for (const application of candidates) {
-    try {
-      // Fetch full detail — the list endpoint omits desiredSalary, resumeFileId,
-      // questionsAndAnswers, and full address needed for hard-rule evaluation.
-      const detail = await client.fetchApplicationDetails(application.id);
-
-      // First-run discovery: log structure only so operators can configure fieldMap.
-      if (hasPlaceholders && processed === 0) {
-        // WR-02: Log structure only — no PII values (GDPR requirement per CLAUDE.md).
-        const structure = Object.fromEntries(
-          Object.keys(detail).map((k) => [k, typeof (detail as Record<string, unknown>)[k]]),
-        );
-        console.error('[main] fieldMap has placeholder values. Application detail structure (keys and value types):');
-        console.error(JSON.stringify(structure, null, 2));
-      }
-
-      // Evaluate all hard rules (collect-all, no LLM)
-      const result = evaluateHardRules(config, detail);
-
-      if (result.outcome === 'pass') {
-        // Phase 2: Download and extract CV for candidates that passed hard rules.
-        // buildCandidateContext() never throws for recoverable failures — returns needsReviewReason instead.
-        // Unrecoverable failures (network, auth) throw and are caught by the outer try/catch below.
-        const ctx: CandidateContext = await buildCandidateContext(client, detail, result);
-
-        if (ctx.needsReviewReason !== null) {
-          // CV could not be extracted — flag for human review without calling GPT-4o.
-          logDecision({
-            candidateId: detail.applicant.id,
-            applicationId: detail.id,
-            outcome: 'needsReview',
-            reasons: [ctx.needsReviewReason],
-            timestamp: new Date().toISOString(),
-          });
-          // D-01/D-02: needsReview candidates are moved to the fail/reviewed stage with
-          // a NEEDS REVIEW header so recruiters see consistent comment structure.
-          if (!dryRun) {
-            const needsReviewComment = [
-              'NEEDS REVIEW — Automated screening incomplete',
-              ctx.needsReviewReason,
-              '[Auto-screened by AI — final decision rests with recruiter]',
-            ].join('\n\n');
-            const reviewedStageId = stageMap.get(config.job.stages.fail);
-            if (reviewedStageId === undefined) {
-              throw new Error(
-                `[write] Reviewed stage "${config.job.stages.fail}" not found in stageMap`,
-              );
-            }
-            await client.postComment(detail.id, needsReviewComment);
-            await client.moveStage(detail.id, reviewedStageId);
-          }
-          needsReview++;
-          processed++;
-          continue;
-        }
-
-        // ctx.cvText is guaranteed non-null here.
-        // Phase 3: GPT-4o soft evaluation via @openai/agents SDK (RULE-02, SAFE-02).
-        // evaluateSoftRules() returns EvaluationResult for ALL outcomes:
-        //   - GPT-4o pass/fail        → outcome: 'pass' | 'fail'
-        //   - MaxTurnsExceededError   → outcome: 'needsReview'  (caught inside evaluator)
-        //   - softRules absent/empty  → outcome: 'pass' (short-circuit, no API call)
-        // Network / auth errors re-throw and are caught by the outer try/catch below
-        // (logged as CandidateDecision{outcome:'error'} per SAFE-01).
-        // CR-01: Dry-run must not call the OpenAI API. In dry-run, synthesize a
-        // deterministic EvaluationResult so the rest of the loop (logEvaluation,
-        // counters) behaves identically without any external call.
-        let evalResult: EvaluationResult;
-        if (dryRun) {
-          evalResult = {
-            applicationId: ctx.applicationId,
-            applicantId: ctx.applicantId,
-            outcome: 'pass',
-            required: [],
-            optional: [],
-            comment: '[DRY_RUN] Soft evaluation skipped — no API call made.',
-            timestamp: new Date().toISOString(),
-          };
-        } else {
-          evalResult = await evaluateSoftRules(ctx, config.softRules);
-        }
-        logEvaluation(evalResult);
-
-        // D-03/D-04: Comment-then-move atomicity. Comment posts FIRST; only on success
-        // does the stage move proceed. If either throws, the outer try/catch increments
-        // errors and the candidate stays in intake for the next cron run.
-        // D-01: 'fail' AND 'needsReview' both go to the fail/reviewed stage.
-        if (!dryRun) {
-          const targetStageName =
-            evalResult.outcome === 'pass'
-              ? config.job.stages.pass
-              : config.job.stages.fail;
-          const targetStageId = stageMap.get(targetStageName);
-          if (targetStageId === undefined) {
-            throw new Error(
-              `[write] Target stage "${targetStageName}" not found in stageMap`,
-            );
-          }
-          await client.postComment(evalResult.applicationId, evalResult.comment);
-          await client.moveStage(evalResult.applicationId, targetStageId);
-        }
-
-        if (evalResult.outcome === 'pass') {
-          passed++;
-        } else if (evalResult.outcome === 'fail') {
-          failed++;
-        } else {
-          // 'needsReview' — recoverable agent failure (max turns, parse error)
-          needsReview++;
-        }
-      } else {
-        // Hard-rule failure — log immediately (same as Phase 1).
-        logDecision({
-          candidateId: detail.applicant.id,
-          applicationId: detail.id,
-          outcome: result.outcome,
-          reasons: result.reasons,
-          timestamp: new Date().toISOString(),
-        });
-        // D-05: Hard-rule fails ALSO trigger BambooHR writes in LIVE_MODE — moved to
-        // the reviewed stage with a comment listing the unmet rules. Same atomicity.
-        if (!dryRun) {
-          const hardRuleComment = [
-            'FAIL — Hard rules',
-            result.reasons.map((r) => `• ${r}`).join('\n'),
-            '[Auto-screened by AI — final decision rests with recruiter]',
-          ].join('\n\n');
-          const failStageId = stageMap.get(config.job.stages.fail);
-          if (failStageId === undefined) {
-            throw new Error(
-              `[write] Fail stage "${config.job.stages.fail}" not found in stageMap`,
-            );
-          }
-          await client.postComment(detail.id, hardRuleComment);
-          await client.moveStage(detail.id, failStageId);
-        }
-        failed++;
-      }
-
-      processed++;
-    } catch (err) {
-      // SAFE-01: Log error record and continue to next candidate.
-      const message = err instanceof Error ? err.message : String(err);
-      logDecision({
-        candidateId: application?.applicant?.id ?? 'unknown',
-        applicationId: application?.id ?? 'unknown',
-        outcome: 'error',
-        reasons: [message],
-        timestamp: new Date().toISOString(),
-      });
-      errors++;
-      // NOTE: Do NOT re-throw — continue to next candidate.
-    }
-  }
-
-  // Final summary to stderr (not stdout — stdout is reserved for JSON log lines)
-  console.error(
-    `[main] Done. processed=${processed} pass=${passed} fail=${failed} needsReview=${needsReview} errors=${errors}`,
+  const pipeline = new ScreeningPipeline(
+    bambooHrClient,
+    candidateProcessor,
+    jsonLogger,
+    config,
+    dryRun,
   );
-  // INFRA-03: machine-readable JSON summary on stdout — final line of the run.
-  // Cron health monitoring can detect successful completion by parsing this line.
-  console.log(
-    JSON.stringify({ processed, pass: passed, fail: failed, needsReview, errors }),
-  );
+
+  await pipeline.run();
 }
 
-// Run main and exit on unhandled error
 main().catch((err) => {
-  console.error('[main] Fatal error:', err instanceof Error ? err.message : String(err));
+  // D-08, D-09: Named errors get a clean message; everything else falls through.
+  if (err instanceof ConfigError || err instanceof StageValidationError) {
+    console.error(`[main] ${err.message}`);
+  } else {
+    console.error(
+      '[main] Fatal error:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   process.exit(1);
 });
