@@ -133,7 +133,7 @@ describe('evaluateHardRules — requiredKeyword', () => {
   it('passes when field contains expected substring (case-insensitive)', () => {
     const config = makeConfig({
       requiredKeyword: [
-        { field: 'location', expectedValue: 'Madrid', label: 'Wrong location' },
+        { field: 'location', expectedValue: 'Madrid', label: 'Wrong location', nullBehavior: 'fail' },
       ],
     });
     const app = makeApp({ applicant: { id: 1, firstName: 'a', lastName: 'b', email: 'c', address: { city: 'Madrid, Spain' } } } as Partial<BambooHRApplication>);
@@ -143,7 +143,7 @@ describe('evaluateHardRules — requiredKeyword', () => {
   it('fails when field does not contain expected substring', () => {
     const config = makeConfig({
       requiredKeyword: [
-        { field: 'location', expectedValue: 'Madrid', label: 'Wrong location' },
+        { field: 'location', expectedValue: 'Madrid', label: 'Wrong location', nullBehavior: 'fail' },
       ],
     });
     const app = makeApp({ applicant: { id: 1, firstName: 'a', lastName: 'b', email: 'c', address: { city: 'Berlin' } } } as Partial<BambooHRApplication>);
