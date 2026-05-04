@@ -2,7 +2,7 @@
 // Phase 5, D-02: Per-candidate pipeline.
 // Replaces the body of the for-of loop in the pre-Phase-5 src/index.ts (lines 89–241,
 // the contents of the try block). Returns a typed CandidateOutcome on the four happy
-// paths and rethrows on unrecoverable failures (SAFE-01 — ScreeningPipeline catches).
+// paths and rethrows on unrecoverable failures (SAFE-01 — JobRunner catches).
 //
 // Dependencies are injected via constructor — no direct imports of concrete classes
 // (Phase-5 success criterion #3 — dependencies flow inward). Unit tests inject vi.fn()
