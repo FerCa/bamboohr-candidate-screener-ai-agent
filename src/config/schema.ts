@@ -1,5 +1,7 @@
 // src/config/schema.ts
-// Zod v4 schema for config.yaml — matches D-01/D-05 named typed field shape
+// Zod v4 schema for config.yaml — Phase 6 multi-job shape (D-01/D-05)
+// jobEntrySchema: per-job entry with openingId, stages, hardRules, fieldMap, softRules
+// configSchema: top-level { jobs: jobEntrySchema[] } (legacy `job:` key normalized in loader.ts)
 // Source: zod.dev/api (safeParse, z.object, z.array, z.record)
 import { z } from 'zod';
 
@@ -44,19 +46,20 @@ const softRulesSchema = z
   })
   .optional();
 
-export const configSchema = z.object({
-  job: z.object({
-    openingId: z
-      .string()
-      .min(1)
-      .refine((v) => !v.startsWith('REPLACE_WITH'), {
-        message: 'openingId must be set to a real BambooHR job opening ID',
-      }),
-    stages: z.object({
-      intake: z.string().min(1),
-      pass: z.string().min(1),
-      fail: z.string().min(1),
+// Phase 6 (D-01): per-job entry schema — every field is per-job; nothing shared across jobs.
+// Threat model: openingId refine rejects placeholder values (REPLACE_WITH_*) at load time.
+// Threat model: hardRules refine requires at least one rule so empty configs are caught.
+export const jobEntrySchema = z.object({
+  openingId: z
+    .string()
+    .min(1)
+    .refine((v) => !v.startsWith('REPLACE_WITH'), {
+      message: 'openingId must be set to a real BambooHR job opening ID',
     }),
+  stages: z.object({
+    intake: z.string().min(1),
+    pass: z.string().min(1),
+    fail: z.string().min(1),
   }),
   hardRules: z
     .object({
@@ -77,6 +80,16 @@ export const configSchema = z.object({
   // Phase 3: optional soft-rule criteria for GPT-4o evaluation (D-01, D-02).
   // Absent → Phase 3 logs candidates as 'pass' with comment 'No soft rules configured'.
   softRules: softRulesSchema,
+});
+
+// Phase 6: JobConfig is the type for a single job entry — used by JobRunner, CandidateProcessor,
+// evaluateHardRules, IBambooHRClient.validateStages.
+export type JobConfig = z.infer<typeof jobEntrySchema>;
+
+// Phase 6 (D-01): top-level schema uses a `jobs` array (min 1).
+// Legacy `job:` YAML shape is normalized to this format in loader.ts (D-02) before Zod parse.
+export const configSchema = z.object({
+  jobs: z.array(jobEntrySchema).min(1),
 });
 
 export type Config = z.infer<typeof configSchema>;
