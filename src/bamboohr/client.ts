@@ -3,7 +3,7 @@
 // Auth: Basic base64("apiKey:x") per official BambooHR docs.
 // All requests MUST include Accept: application/json (API defaults to XML).
 // Source: documentation.bamboohr.com/docs/getting-started
-import type { Config } from '../config/schema.js';
+import type { JobConfig } from '../config/schema.js';
 import type {
   BambooHRApplication,
   BambooHRStatus,
@@ -118,7 +118,7 @@ export class BambooHRClient {
    * Call this once at startup, before the candidate loop.
    * Returns Map<stageName, stageId> — consumed by index.ts to avoid duplicate API call (WR-03).
    */
-  async validateStages(config: Config): Promise<Map<string, number>> {
+  async validateStages(job: JobConfig): Promise<Map<string, number>> {
     let statuses: BambooHRStatus[] = [];
     try {
       statuses = await this.get<BambooHRStatus[]>('/applicant_tracking/statuses');
@@ -133,10 +133,10 @@ export class BambooHRClient {
     const available = [...nameSet].join(', ');
     let hasError = false;
 
-    for (const [key, stageName] of Object.entries(config.job.stages)) {
+    for (const [key, stageName] of Object.entries(job.stages)) {
       if (!nameSet.has(stageName)) {
         console.error(
-          `[bamboohr] Stage "${stageName}" (config.job.stages.${key}) not found in BambooHR.`,
+          `[bamboohr] Stage "${stageName}" (job.stages.${key}) not found in BambooHR.`,
         );
         console.error(`[bamboohr] Available stages: ${available}`);
         hasError = true;

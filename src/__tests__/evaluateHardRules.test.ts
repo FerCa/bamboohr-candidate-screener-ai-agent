@@ -4,20 +4,18 @@
 // The collect-all invariant (D-03 from Phase 1) is the most important regression check.
 import { describe, it, expect } from 'vitest';
 import { evaluateHardRules } from '../rules/hard-rules.js';
-import type { Config } from '../config/schema.js';
+import type { JobConfig } from '../config/schema.js';
 import type { BambooHRApplication } from '../bamboohr/types.js';
 
 /**
- * Build a minimal Config that passes the Zod refinement (at least one rule).
+ * Build a minimal JobConfig for hard-rule tests.
  * Tests override the rule blocks they care about.
  */
-function makeConfig(overrides: Partial<Config['hardRules']> = {}, fieldMap: Record<string, string> = {}): Config {
+function makeConfig(overrides: Partial<JobConfig['hardRules']> = {}, fieldMap: Record<string, string> = {}): JobConfig {
   return {
-    job: {
-      openingId: 'test-job',
-      stages: { intake: 'New', pass: 'Schedule Phone Screen', fail: 'Reviewed' },
-    },
-    hardRules: overrides as Config['hardRules'],
+    openingId: 'test-job',
+    stages: { intake: 'New', pass: 'Schedule Phone Screen', fail: 'Reviewed' },
+    hardRules: overrides as JobConfig['hardRules'],
     fieldMap: {
       salary: 'desiredSalary',
       rightToWork: 'rightToWorkAnswer',

@@ -3,14 +3,14 @@
 // No `implements` keyword on BambooHRClient — TypeScript structural typing satisfies this
 // interface implicitly (D-05). This interface enables dependency injection in
 // CandidateProcessor and JobRunner, and unit-test mocking via vi.fn().
-import type { Config } from '../config/schema.js';
+import type { JobConfig } from '../config/schema.js';
 import type { BambooHRApplication } from '../bamboohr/types.js';
 
 export interface IBambooHRClient {
   get<T>(path: string, params?: Record<string, string>): Promise<T>;
   postComment(applicationId: number, comment: string): Promise<void>;
   moveStage(applicationId: number, stageId: number): Promise<void>;
-  validateStages(config: Config): Promise<Map<string, number>>;
+  validateStages(job: JobConfig): Promise<Map<string, number>>;
   fetchApplicationDetails(id: number): Promise<BambooHRApplication>;
   downloadPdf(
     applicationId: number,
