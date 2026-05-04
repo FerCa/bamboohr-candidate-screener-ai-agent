@@ -257,7 +257,7 @@ describe('CandidateProcessor — Paths B/C: soft-eval fail / soft-eval needsRevi
 });
 
 describe('CandidateProcessor — error propagation (SAFE-01 surface)', () => {
-  it('rethrows unrecoverable errors so ScreeningPipeline can count them', async () => {
+  it('rethrows unrecoverable errors so JobRunner can count them', async () => {
     const bambooHrClient = makeBambooMock();
     (bambooHrClient.fetchApplicationDetails as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error('network error'),

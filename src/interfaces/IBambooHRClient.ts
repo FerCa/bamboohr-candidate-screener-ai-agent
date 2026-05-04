@@ -2,7 +2,7 @@
 // Structural interface mirroring the public surface of src/bamboohr/client.ts BambooHRClient.
 // No `implements` keyword on BambooHRClient — TypeScript structural typing satisfies this
 // interface implicitly (D-05). This interface enables dependency injection in
-// CandidateProcessor and ScreeningPipeline, and unit-test mocking via vi.fn().
+// CandidateProcessor and JobRunner, and unit-test mocking via vi.fn().
 import type { Config } from '../config/schema.js';
 import type { BambooHRApplication } from '../bamboohr/types.js';
 
