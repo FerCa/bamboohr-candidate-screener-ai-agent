@@ -5,13 +5,13 @@ milestone_name: Multi-Job & AWS Deployment
 status: in_progress
 stopped_at: "Phase 6 executing"
 last_updated: "2026-05-04T00:00:00.000Z"
-last_activity: 2026-05-04 -- Phase 6 Wave 1 complete (1/5 plans done)
+last_activity: 2026-05-04 -- Phase 6 Wave 2 complete (3/5 plans done)
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 5
-  completed_plans: 1
-  percent: 20
+  completed_plans: 3
+  percent: 60
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 ## Current Position
 
 Phase: 6 — Multi-Job Refactor
-Plan: 06-02, 06-03 (Wave 2)
-Status: Executing (Wave 2 of 3)
-Last activity: 2026-05-04 — Wave 1 complete (06-01 done)
+Plan: 06-04, 06-05 (Wave 3)
+Status: Executing (Wave 3 of 3)
+Last activity: 2026-05-04 — Wave 2 complete (06-02, 06-03 done)
 
 Progress: [░░░░░░░░░░] 0%
 

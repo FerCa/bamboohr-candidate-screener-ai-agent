@@ -189,8 +189,8 @@ Plans:
 - [x] 06-01-PLAN.md — Config schema + loader + types: jobEntrySchema, JobConfig type, configSchema (jobs array), backward-compatible normalization in loadConfig() (CONF-06, CONF-07)
 
 **Wave 2** *(parallel — no shared files; both depend only on Plan 01)*
-- [ ] 06-02-PLAN.md — Create job-runner.ts (ScreeningPipeline → JobRunner rename, JobConfig slice, JobResult return type); update IBambooHRClient.validateStages + BambooHRClient.validateStages to accept JobConfig (MULTI-01, MULTI-02)
-- [ ] 06-03-PLAN.md — Update CandidateProcessor (Config → JobConfig) and evaluateHardRules (Config → JobConfig) (MULTI-01)
+- [x] 06-02-PLAN.md — Create job-runner.ts (ScreeningPipeline → JobRunner rename, JobConfig slice, JobResult return type); update IBambooHRClient.validateStages + BambooHRClient.validateStages to accept JobConfig (MULTI-01, MULTI-02)
+- [x] 06-03-PLAN.md — Update CandidateProcessor (Config → JobConfig) and evaluateHardRules (Config → JobConfig) (MULTI-01)
 
 **Wave 3** *(parallel — no shared files; both depend on Plans 02 and 03)*
 - [ ] 06-04-PLAN.md — Create MultiJobOrchestrator (per-job loop, D-08 summary JSON, D-09 error jobs, D-10 always resolves) + MultiJobOrchestrator.test.ts (MULTI-01, MULTI-02, MULTI-03)
