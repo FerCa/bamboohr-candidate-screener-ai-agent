@@ -52,7 +52,9 @@ docker build -t "${IMAGE_NAME}" "${REPO_DIR}"
 echo "[ok] Docker image built"
 
 # 5. Register cron job (idempotent — removes previous entry first)
-CRON_CMD="0 11 * * * docker run --rm --env-file ${ENV_FILE} -v ${CONFIG_FILE}:/app/config.yaml ${IMAGE_NAME}"
+# Use full path to docker so cron's minimal PATH doesn't cause "command not found"
+DOCKER_BIN="$(command -v docker)"
+CRON_CMD="0 11 * * * ${DOCKER_BIN} run --rm --env-file ${ENV_FILE} -v ${CONFIG_FILE}:/app/config.yaml ${IMAGE_NAME}"
 (crontab -l 2>/dev/null | grep -v "${IMAGE_NAME}" || true; echo "${CRON_CMD}") | crontab -
 echo "[ok] Cron job registered: daily at 11:00 AM"
 
