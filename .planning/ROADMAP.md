@@ -193,8 +193,8 @@ Plans:
 - [x] 06-03-PLAN.md — Update CandidateProcessor (Config → JobConfig) and evaluateHardRules (Config → JobConfig) (MULTI-01)
 
 **Wave 3** *(parallel — no shared files; both depend on Plans 02 and 03)*
-- [ ] 06-04-PLAN.md — Create MultiJobOrchestrator (per-job loop, D-08 summary JSON, D-09 error jobs, D-10 always resolves) + MultiJobOrchestrator.test.ts (MULTI-01, MULTI-02, MULTI-03)
-- [ ] 06-05-PLAN.md — Wire index.ts to MultiJobOrchestrator; create JobRunner.test.ts; delete screening-pipeline.ts; full compile + test verification (CONF-06, CONF-07, MULTI-01, MULTI-02, MULTI-03)
+- [x] 06-04-PLAN.md — Create MultiJobOrchestrator (per-job loop, D-08 summary JSON, D-09 error jobs, D-10 always resolves) + MultiJobOrchestrator.test.ts (MULTI-01, MULTI-02, MULTI-03)
+- [x] 06-05-PLAN.md — Wire index.ts to MultiJobOrchestrator; create JobRunner.test.ts; delete screening-pipeline.ts; full compile + test verification (CONF-06, CONF-07, MULTI-01, MULTI-02, MULTI-03)
 
 Cross-cutting constraints: SAFE-03 (lock file guard) explicitly deferred from Phase 6 — Docker `/tmp/` is wiped per `docker run --rm` so volume-mounted lock path needed; ESM `.js` imports on all new files; `process.exit` only in src/index.ts; `MultiJobOrchestrator.run()` always resolves (D-10); per-job CandidateProcessor constructed fresh inside orchestrator loop (no cross-job contamination); `validateStages()` called per-job inside JobRunner (D-05, PITFALL MJ-04).
 
