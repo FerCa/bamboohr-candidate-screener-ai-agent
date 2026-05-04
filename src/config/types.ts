@@ -3,3 +3,6 @@
 export type { Config } from './schema.js';
 
 export type { Config as AppConfig } from './schema.js';
+
+// Phase 6: JobConfig re-exported for downstream consumers (JobRunner, CandidateProcessor, evaluateHardRules)
+export type { JobConfig } from './schema.js';
