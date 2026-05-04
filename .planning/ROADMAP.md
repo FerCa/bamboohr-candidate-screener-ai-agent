@@ -181,7 +181,22 @@ Cross-cutting constraints: zero `any` casts in production code; `process.exit` e
   3. Configuring an invalid stage ID in job 2 causes job 2 to log a `job_error` outcome and skip, while job 1 completes normally; the run exits with code 0 and logs aggregate totals
   4. The final JSON summary line includes both per-job counts (keyed by `openingId`) and aggregate `processed`, `pass`, `fail`, `needsReview`, and `errors` totals across all jobs
   5. If a lock file younger than 4 hours exists at run start, the process logs a `lock_active` message and exits immediately without fetching any candidates; the lock file is removed on clean exit and on error exit
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+
+**Wave 1**
+- [ ] 06-01-PLAN.md — Config schema + loader + types: jobEntrySchema, JobConfig type, configSchema (jobs array), backward-compatible normalization in loadConfig() (CONF-06, CONF-07)
+
+**Wave 2** *(parallel — no shared files; both depend only on Plan 01)*
+- [ ] 06-02-PLAN.md — Create job-runner.ts (ScreeningPipeline → JobRunner rename, JobConfig slice, JobResult return type); update IBambooHRClient.validateStages + BambooHRClient.validateStages to accept JobConfig (MULTI-01, MULTI-02)
+- [ ] 06-03-PLAN.md — Update CandidateProcessor (Config → JobConfig) and evaluateHardRules (Config → JobConfig) (MULTI-01)
+
+**Wave 3** *(parallel — no shared files; both depend on Plans 02 and 03)*
+- [ ] 06-04-PLAN.md — Create MultiJobOrchestrator (per-job loop, D-08 summary JSON, D-09 error jobs, D-10 always resolves) + MultiJobOrchestrator.test.ts (MULTI-01, MULTI-02, MULTI-03)
+- [ ] 06-05-PLAN.md — Wire index.ts to MultiJobOrchestrator; create JobRunner.test.ts; delete screening-pipeline.ts; full compile + test verification (CONF-06, CONF-07, MULTI-01, MULTI-02, MULTI-03)
+
+Cross-cutting constraints: SAFE-03 (lock file guard) explicitly deferred from Phase 6 — Docker `/tmp/` is wiped per `docker run --rm` so volume-mounted lock path needed; ESM `.js` imports on all new files; `process.exit` only in src/index.ts; `MultiJobOrchestrator.run()` always resolves (D-10); per-job CandidateProcessor constructed fresh inside orchestrator loop (no cross-job contamination); `validateStages()` called per-job inside JobRunner (D-05, PITFALL MJ-04).
 
 ### Phase 7: Terraform Infrastructure
 **Goal**: All AWS resources required to run the screener on EC2 are provisioned by a single `terraform apply` — ECR repository, IAM role with minimal permissions, security group, EC2 instance with Docker and cron bootstrapped via `user_data`, and SSM Parameter Store entries for all secrets; no SSH access is needed; no secret values appear in committed files or Terraform state
@@ -219,6 +234,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 3. Agent Evaluation | 4/4 | Complete | 2026-05-02 |
 | 4. Live Mode & Deployment | 3/3 | Complete | 2026-05-02 |
 | 5. Clean Code & SOLID Refactor | 4/4 | Complete | 2026-05-03 |
-| 6. Multi-Job Refactor | 0/? | Not started | - |
+| 6. Multi-Job Refactor | 0/5 | Not started | - |
 | 7. Terraform Infrastructure | 0/? | Not started | - |
 | 8. Deploy Scripts & Cron Verification | 0/? | Not started | - |
