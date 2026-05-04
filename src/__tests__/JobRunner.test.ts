@@ -1,24 +1,25 @@
-// src/__tests__/ScreeningPipeline.test.ts
-// Integration-level tests for ScreeningPipeline.
+// src/__tests__/JobRunner.test.ts
+// Integration-level tests for JobRunner.
 // Mocks CandidateProcessor.process and asserts counter aggregation, SAFE-01 isolation,
-// and the INFRA-03 JSON summary shape.
+// and the JobResult return value shape (INFRA-03 JSON summary now emitted by MultiJobOrchestrator).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ScreeningPipeline } from '../screener/screening-pipeline.js';
+import { JobRunner } from '../screener/job-runner.js';
 import { CandidateProcessor } from '../pipeline/candidate-processor.js';
 import { LiveModeWriter } from '../pipeline/live-mode-writer.js';
 import type { IBambooHRClient } from '../interfaces/IBambooHRClient.js';
 import type { ISoftEvaluator } from '../interfaces/ISoftEvaluator.js';
 import type { ILogger } from '../interfaces/ILogger.js';
-import type { Config } from '../config/schema.js';
+import type { JobConfig } from '../config/schema.js';
 import type { BambooHRApplication } from '../bamboohr/types.js';
 
-function makeConfig(): Config {
+function makeJobConfig(): JobConfig {
   return {
-    job: { openingId: 'job-1', stages: { intake: 'New', pass: 'Schedule Phone Screen', fail: 'Reviewed' } },
+    openingId: 'job-1',
+    stages: { intake: 'New', pass: 'Schedule Phone Screen', fail: 'Reviewed' },
     hardRules: { maxSalary: { value: 100000, label: 'Salary above ceiling' } },
     fieldMap: { salary: 'desiredSalary' },
     softRules: undefined,
-  } as Config;
+  } as JobConfig;
 }
 
 function makeApp(id: number): BambooHRApplication {
@@ -60,37 +61,32 @@ function makeProcessorMock(processImpl: (app: BambooHRApplication) => Promise<'p
   const loggerMock = makeLoggerMock();
   const liveWriter = new LiveModeWriter(bambooMock);
   const proc = new CandidateProcessor(
-    bambooMock, softMock, loggerMock, liveWriter, makeConfig(), true,
+    bambooMock, softMock, loggerMock, liveWriter, makeJobConfig(), true,
   );
   proc.process = vi.fn(processImpl) as unknown as CandidateProcessor['process'];
   return proc;
 }
 
-describe('ScreeningPipeline.run', () => {
-  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+describe('JobRunner.run', () => {
   let stderrSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
   afterEach(() => {
-    stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   });
 
-  it('emits zero-candidate summary when fetchCandidates returns []', async () => {
+  it('returns zero-candidate result when fetchCandidates returns []', async () => {
     const bambooHrClient = makeBambooMock([]);
     const logger = makeLoggerMock();
     const processor = makeProcessorMock(async () => 'pass');
-    const pipeline = new ScreeningPipeline(bambooHrClient, processor, logger, makeConfig(), true);
+    const runner = new JobRunner(bambooHrClient, processor, logger, makeJobConfig(), true);
 
-    await pipeline.run();
+    const result = await runner.run();
 
     expect(processor.process).not.toHaveBeenCalled();
-    expect(stdoutSpy).toHaveBeenCalledWith(
-      JSON.stringify({ processed: 0, pass: 0, fail: 0, needsReview: 0, errors: 0 }),
-    );
+    expect(result).toEqual({ openingId: 'job-1', processed: 0, pass: 0, fail: 0, needsReview: 0, errors: 0 });
   });
 
   it('aggregates counters across pass/fail/needsReview outcomes', async () => {
@@ -100,14 +96,12 @@ describe('ScreeningPipeline.run', () => {
     const processor = makeProcessorMock(async () => outcomes[i++]!);
     const bambooHrClient = makeBambooMock(apps);
     const logger = makeLoggerMock();
-    const pipeline = new ScreeningPipeline(bambooHrClient, processor, logger, makeConfig(), true);
+    const runner = new JobRunner(bambooHrClient, processor, logger, makeJobConfig(), true);
 
-    await pipeline.run();
+    const result = await runner.run();
 
     expect(processor.process).toHaveBeenCalledTimes(4);
-    expect(stdoutSpy).toHaveBeenCalledWith(
-      JSON.stringify({ processed: 4, pass: 2, fail: 1, needsReview: 1, errors: 0 }),
-    );
+    expect(result).toEqual({ openingId: 'job-1', processed: 4, pass: 2, fail: 1, needsReview: 1, errors: 0 });
   });
 
   it('logs error and continues when CandidateProcessor.process throws (SAFE-01)', async () => {
@@ -118,14 +112,12 @@ describe('ScreeningPipeline.run', () => {
     });
     const bambooHrClient = makeBambooMock(apps);
     const logger = makeLoggerMock();
-    const pipeline = new ScreeningPipeline(bambooHrClient, processor, logger, makeConfig(), true);
+    const runner = new JobRunner(bambooHrClient, processor, logger, makeJobConfig(), true);
 
-    await pipeline.run();
+    const result = await runner.run();
 
     // 2 successful + 1 errored = 2 processed (pass) + 1 error
-    expect(stdoutSpy).toHaveBeenCalledWith(
-      JSON.stringify({ processed: 2, pass: 2, fail: 0, needsReview: 0, errors: 1 }),
-    );
+    expect(result).toEqual({ openingId: 'job-1', processed: 2, pass: 2, fail: 0, needsReview: 0, errors: 1 });
     // logger.logDecision called once with outcome 'error'
     expect(logger.logDecision).toHaveBeenCalledTimes(1);
     const errorCall = (logger.logDecision as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -133,15 +125,16 @@ describe('ScreeningPipeline.run', () => {
     expect(errorCall.reasons).toContain('boom');
   });
 
-  it('calls validateStages exactly once and fetchCandidates exactly once', async () => {
+  it('calls validateStages exactly once with makeJobConfig() and fetchCandidates exactly once', async () => {
     const bambooHrClient = makeBambooMock([]);
     const logger = makeLoggerMock();
     const processor = makeProcessorMock(async () => 'pass');
-    const pipeline = new ScreeningPipeline(bambooHrClient, processor, logger, makeConfig(), true);
+    const runner = new JobRunner(bambooHrClient, processor, logger, makeJobConfig(), true);
 
-    await pipeline.run();
+    await runner.run();
 
     expect(bambooHrClient.validateStages).toHaveBeenCalledTimes(1);
+    expect(bambooHrClient.validateStages).toHaveBeenCalledWith(makeJobConfig());
     expect(bambooHrClient.fetchCandidates).toHaveBeenCalledTimes(1);
     expect(bambooHrClient.fetchCandidates).toHaveBeenCalledWith('job-1', '1');
   });
@@ -154,8 +147,8 @@ describe('ScreeningPipeline.run', () => {
     );
     const logger = makeLoggerMock();
     const processor = makeProcessorMock(async () => 'pass');
-    const pipeline = new ScreeningPipeline(bambooHrClient, processor, logger, makeConfig(), true);
+    const runner = new JobRunner(bambooHrClient, processor, logger, makeJobConfig(), true);
 
-    await expect(pipeline.run()).rejects.toThrowError(/Intake stage "New" not found/);
+    await expect(runner.run()).rejects.toThrowError(/Intake stage "New" not found/);
   });
 });
