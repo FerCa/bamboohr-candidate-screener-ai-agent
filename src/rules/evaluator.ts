@@ -3,7 +3,7 @@
 // D-03: Collect-all — EVERY rule is evaluated; all unmet labels accumulate in reasons[].
 // D-07/D-08: Field values resolved via config.fieldMap — never hardcoded paths.
 // RULE-01: Deterministic evaluation; no LLM invocation.
-import type { Config } from '../config/schema.js';
+import type { JobConfig } from '../config/schema.js';
 import type { BambooHRApplication } from '../bamboohr/types.js';
 import type { RuleResult } from './types.js';
 
@@ -48,11 +48,11 @@ function resolveField(
  * D-03: All unmet rule labels must be present in reasons[] for a complete rejection message.
  */
 export function evaluateHardRules(
-  config: Config,
+  job: JobConfig,
   application: BambooHRApplication,
 ): RuleResult {
   const reasons: string[] = [];
-  const { hardRules, fieldMap } = config;
+  const { hardRules, fieldMap } = job;
 
   // --- Rule 1: maxSalary ---
   // Checks that the candidate's expected salary does not exceed the configured ceiling.
