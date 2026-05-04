@@ -4,6 +4,14 @@
 
 Build a cron-triggered Docker container that automates first-pass screening of BambooHR applicants. The delivery sequence is: validated config + BambooHR API connection + hard-rule pre-filter (Phase 1) → CV PDF extraction + candidate context pipeline (Phase 2) → GPT-4o soft evaluation + agent orchestration in dry-run (Phase 3) → live-mode writes + Docker packaging + cron wiring (Phase 4). Each phase proves a slice of the pipeline before the next layer is added.
 
+---
+
+## Milestone v1.1 — Multi-Job & AWS Deployment
+
+Extends the single-job screener to handle N configured job openings per run and provides a production-ready AWS deployment path. The delivery sequence is: TypeScript multi-job refactor (Phase 6) → Terraform infrastructure provisioning (Phase 7) → deploy scripts and EC2 cron verification (Phase 8). Phase 6 has no AWS dependency and is testable locally; Phases 7 and 8 require AWS credentials.
+
+---
+
 ## Phases
 
 **Phase Numbering:**
@@ -16,6 +24,10 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: PDF Pipeline** - CV download, text extraction, content validation, and candidate context ready for agent input
 - [x] **Phase 3: Agent Evaluation** - GPT-4o soft evaluation via OpenAI Agents SDK with dry-run end-to-end flow complete
 - [x] **Phase 4: Live Mode & Deployment** - Production-ready Docker image, live-mode writes enabled, cron wiring documented
+- [x] **Phase 5: Clean Code & SOLID Refactor** - Full codebase refactor — separation of concerns, SOLID principles, injectable dependencies, no `any` casts
+- [ ] **Phase 6: Multi-Job Refactor** - TypeScript schema and pipeline updated to process N jobs per run; idempotency lock guard in place; backward-compatible with existing single-job config
+- [ ] **Phase 7: Terraform Infrastructure** - All AWS resources provisioned reproducibly; secrets stored in SSM Parameter Store; EC2 instance bootstraps Docker and cron without manual SSH
+- [ ] **Phase 8: Deploy Scripts & Cron Verification** - One-command deploy from developer Mac to ECR; EC2 cron wrapper fetches secrets at runtime and drives the container; end-to-end live run confirmed
 
 ## Phase Details
 
@@ -159,10 +171,46 @@ Plans:
 
 Cross-cutting constraints: zero `any` casts in production code; `process.exit` exists ONLY in src/index.ts (loader.ts and client.ts throw named errors instead); ESM `.js` imports on every new file; full descriptive variable names per D-12 (`bambooHrClient`, `applicationDetail`, `candidateContext`, `applications`, `agentOutput`, `hardRuleResult`); no `implements` keyword on concrete classes (TypeScript structural typing satisfies interfaces implicitly per D-05); end-to-end dry-run and live-mode behavior preserved (locked by 4 vitest test files).
 
+### Phase 6: Multi-Job Refactor
+**Goal**: The TypeScript codebase processes N jobs per container run — each job runs the full pipeline with its own stage validation, candidate fetch, and write path; failures in one job do not abort others; a run-level lock file prevents cron overlap
+**Depends on**: Phase 5
+**Requirements**: CONF-06, CONF-07, MULTI-01, MULTI-02, MULTI-03, SAFE-03
+**Success Criteria** (what must be TRUE):
+  1. A `config.yaml` with a `jobs` array containing two entries causes the screener to fetch and process candidates for both job openings in a single container run, with each job's decisions logged under its own `openingId`
+  2. A legacy single-job `config.yaml` (without a `jobs` array) loads and runs without any changes to the file — the loader normalizes it to a one-item jobs array internally
+  3. Configuring an invalid stage ID in job 2 causes job 2 to log a `job_error` outcome and skip, while job 1 completes normally; the run exits with code 0 and logs aggregate totals
+  4. The final JSON summary line includes both per-job counts (keyed by `openingId`) and aggregate `processed`, `pass`, `fail`, `needsReview`, and `errors` totals across all jobs
+  5. If a lock file younger than 4 hours exists at run start, the process logs a `lock_active` message and exits immediately without fetching any candidates; the lock file is removed on clean exit and on error exit
+**Plans**: TBD
+
+### Phase 7: Terraform Infrastructure
+**Goal**: All AWS resources required to run the screener on EC2 are provisioned by a single `terraform apply` — ECR repository, IAM role with minimal permissions, security group, EC2 instance with Docker and cron bootstrapped via `user_data`, and SSM Parameter Store entries for all secrets; no SSH access is needed; no secret values appear in committed files or Terraform state
+**Depends on**: Phase 6
+**Requirements**: INFRA-06, INFRA-07, INFRA-08, INFRA-11
+**Success Criteria** (what must be TRUE):
+  1. Running `terraform apply` from a clean state creates all required AWS resources without error; running it a second time shows "No changes" — the configuration is idempotent
+  2. The EC2 instance has Docker installed and a daily cron job registered without any manual SSH session — verified by checking the instance system log or SSM Run Command output
+  3. All Terraform resource names, region, and SSM path prefixes are driven by input variables; no AWS account ID, company name, or environment-specific value appears in any committed `.tf` file
+  4. A `terraform destroy` followed by `terraform apply` re-creates the infrastructure identically, including a fresh EC2 instance that re-bootstraps via `user_data`
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 8: Deploy Scripts & Cron Verification
+**Goal**: A developer on a Mac can build, tag, and push a new Docker image to ECR and trigger a pull on the EC2 instance with a single script; the EC2 cron wrapper fetches all secrets from SSM at each invocation and passes them to `docker run` — no secrets are ever written to disk; an end-to-end dry-run on EC2 confirms the full deployment path works
+**Depends on**: Phase 7
+**Requirements**: INFRA-09, INFRA-10
+**Success Criteria** (what must be TRUE):
+  1. Running `scripts/deploy.sh` from a developer Mac builds the Docker image, tags it with the current git SHA and `latest`, and pushes both tags to ECR — with the ECR URL read from Terraform output, not hardcoded
+  2. After a `deploy.sh` run, manually triggering the cron script on EC2 (via SSM Run Command) pulls the latest image, fetches secrets from SSM, and runs the container — confirmed by a dry-run summary JSON line in the SSM command output
+  3. At no point during cron execution does any secret value appear in a file on the EC2 instance disk; the SSM fetch, `docker run`, and cleanup all happen in memory within the cron wrapper script
+  4. Rotating a secret by updating its SSM Parameter Store value takes effect on the next cron invocation with no instance restart or `deploy.sh` re-run required
+**Plans**: TBD
+**UI hint**: no
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -171,3 +219,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 3. Agent Evaluation | 4/4 | Complete | 2026-05-02 |
 | 4. Live Mode & Deployment | 3/3 | Complete | 2026-05-02 |
 | 5. Clean Code & SOLID Refactor | 4/4 | Complete | 2026-05-03 |
+| 6. Multi-Job Refactor | 0/? | Not started | - |
+| 7. Terraform Infrastructure | 0/? | Not started | - |
+| 8. Deploy Scripts & Cron Verification | 0/? | Not started | - |

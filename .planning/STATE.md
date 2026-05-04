@@ -5,9 +5,9 @@ milestone_name: Multi-Job & AWS Deployment
 status: planning
 stopped_at: ~
 last_updated: "2026-05-04T00:00:00.000Z"
-last_activity: 2026-05-04 -- Milestone v1.1 started
+last_activity: 2026-05-04 -- Roadmap created for v1.1 (Phases 6-8)
 progress:
-  total_phases: 0
+  total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Not started (roadmap defined)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-05-04 — Milestone v1.1 started
+Status: Ready for Phase 6 planning
+Last activity: 2026-05-04 — Roadmap created for v1.1 (Phases 6-8)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -64,10 +64,16 @@ Recent decisions affecting current work:
 - Init: Mixed rules (YAML hard rules + LLM soft evaluation) for cost + determinism
 - Init: External cron over internal scheduler (portable, stateless container)
 - Init: Dry-run default (`DRY_RUN=true`); live writes require explicit `LIVE_MODE=true`
+- v1.1: t3.micro (x86) chosen over t4g.micro (ARM64) — standard docker build, no cross-platform needed
+- v1.1: SSM Parameter Store chosen over Secrets Manager — free standard tier sufficient for static keys
+- v1.1: `validateStages()` called per-job inside the loop (not once globally) — prevents wrong stage map applied across jobs (PITFALL MJ-04)
+- v1.1: `user_data_replace_on_change = true` enforced from day one — predictable instance replacement on changes (PITFALL TF-01)
+- v1.1: Secrets never in Terraform variables — fetched from SSM at cron runtime only (PITFALL TF-02)
 
 ### Roadmap Evolution
 
 - Phase 5 added: Clean Code & SOLID Refactor — full codebase refactor for separation of concerns, SOLID principles, injectable dependencies, no `any` casts
+- v1.1 roadmap: Phases 6-8 defined (Multi-Job Refactor, Terraform Infrastructure, Deploy Scripts & Cron Verification)
 
 ### Pending Todos
 
@@ -82,11 +88,9 @@ None yet.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Safety | SAFE-03: Idempotency guard (processed.json) | v2 — strongly recommended for v1.x | Init |
 | Safety | SAFE-04: Zod validation of GPT-4o structured responses | v2 | Init |
 | PDF | PDF-03: Image-only PDF detection (word count + file size) | v2 | Init |
 | BambooHR | BAMB-05: Exponential backoff retry on 429/5xx | v2 | Init |
-| Config | CONF-05: Multi-job per-job configuration | v2 | Init |
 | Infra | INFRA-05: Slack webhook run summary | v2 | Init |
 
 ### Quick Tasks Completed
@@ -97,6 +101,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-05-02T13:51:24.704Z
-Stopped at: context exhaustion at 75% (2026-05-02)
+Last session: 2026-05-04T00:00:00.000Z
+Stopped at: roadmap created for v1.1
 Resume file: None
