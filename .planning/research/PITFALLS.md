@@ -1,14 +1,398 @@
 # Pitfalls Research
 
 **Domain:** BambooHR candidate screening agent (TypeScript + OpenAI Agents SDK + Docker + cron)
-**Researched:** 2026-05-01
-**Confidence:** MEDIUM — External lookup tools unavailable; findings drawn from training knowledge (cutoff August 2025). BambooHR API behavior and OpenAI Agents SDK internals are well-documented in training data. Flag any BambooHR-specific claims for manual verification against https://documentation.bamboohr.com before shipping.
+**Researched (v1.0):** 2026-05-01 | **Researched (v1.1 additions):** 2026-05-04
+**Confidence:** MEDIUM overall — BambooHR API and OpenAI SDK claims from training data (cutoff August 2025). AWS/Terraform/ECR claims verified via web search May 2026. Flag BambooHR-specific claims for manual verification against https://documentation.bamboohr.com before shipping.
 
 ---
 
-## Critical Pitfalls
+## v1.1 Milestone Pitfalls: Multi-Job & AWS Deployment
 
-### Pitfall 1: Double-Processing Candidates — No Idempotency Guard
+These pitfalls are specific to the work being added in Milestone v1.1. v1.0 pitfalls follow in the section below.
+
+---
+
+### Area 1: Multi-Job Config
+
+---
+
+#### MJ-01: Schema Rewrite Breaks Existing Single-Job `config.yaml` Files
+
+**What goes wrong:**
+The current `configSchema` has a top-level `job` key (a single object with `openingId` and `stages`). Naively migrating to `jobs` (an array) invalidates every existing `config.yaml` that uses the old `job:` key. Operators who have a working v1.0 setup get a `ConfigError` immediately after upgrading. If the schema change is also a breaking rename (not a superset), you cannot even have a transition period.
+
+**Why it happens:**
+Engineers think in terms of the new shape and replace the old key rather than extending the schema to accept both forms. The Zod `.refine()` guard on `hardRules` (which must contain at least one rule) is already a good pattern here but the `job` object is not guarded the same way.
+
+**How to prevent:**
+Use an expand-then-contract pattern. In the first PR, make the schema accept both the legacy `job: { ... }` key and the new `jobs: [...]` array. In the loader, detect which key is present and normalize to the array form internally. Only deprecate `job:` in a later cleanup. In Zod this is cleanly done with `z.union([legacySchema, multiJobSchema])` parsed before schema validation, or by making `jobs` optional with a default derived from `job`. Concrete shape:
+
+```typescript
+// Accept either jobs array OR legacy job object — normalize inside loader.ts
+const rawWithJobs = 'jobs' in raw ? raw : { ...raw, jobs: [raw.job], job: undefined };
+```
+
+Mark the config template with a deprecation notice rather than removing the old key immediately.
+
+**Phase to address:** Multi-job config phase — first PR must include backward-compatible schema, not a hard cutover.
+
+---
+
+#### MJ-02: Per-Job Error Isolation Not Extended to Job Loop
+
+**What goes wrong:**
+The existing `ScreeningPipeline.run()` has a solid per-candidate SAFE-01 try/catch: one candidate failing does not abort the run. When iterating over N jobs, developers often forget to apply the same pattern at the job level. If Job 2's `validateStages()` throws (a stage was renamed overnight), the entire run aborts and Job 3 and Job 4 are never processed.
+
+**Why it happens:**
+The pattern exists in the code but only at the candidate loop level. Adding a multi-job outer loop naturally inherits the code style without the try/catch because the job-level failure looks "fatal" — the developer thinks "if stages are wrong, why continue?" But partial processing is better than no processing.
+
+**How to prevent:**
+Wrap the per-job block in its own try/catch. On job-level failure, log a structured error line (`{ outcome: 'job_error', jobId: ..., reason: ... }`) and `continue` to the next job. This mirrors SAFE-01 exactly, one level up. Update the run summary JSON to include a `jobErrors` counter alongside `processed`, `pass`, `fail`.
+
+**Phase to address:** Multi-job config phase — define the job-level try/catch in the ScreeningPipeline redesign before coding the loop.
+
+---
+
+#### MJ-03: `fieldMap` and Rule Types Are Job-Specific but Shared in Config
+
+**What goes wrong:**
+The current schema has a single top-level `fieldMap` (a `z.record(z.string(), z.string())`) used to map rule field names to BambooHR application field keys. When supporting multiple jobs, each job may have different application questions with different field keys. A rule like `requiredKeyword.field: "employmentType"` maps to BambooHR field `234` for Job A but to field `891` for Job B. If `fieldMap` stays global, Job B's rules silently use Job A's field mapping and evaluate the wrong application fields — no error is thrown.
+
+**Why it happens:**
+The fieldMap was designed for a single job. It's natural to leave it at the top level when first adding `jobs` as an array, not realizing each job can have a structurally different application form in BambooHR.
+
+**How to prevent:**
+Move `fieldMap`, `hardRules`, and `softRules` inside each job object in the new schema. Each job entry becomes self-contained: `{ openingId, stages, fieldMap, hardRules, softRules }`. Validate that each job block independently satisfies the "at least one hard rule" constraint. The `CandidateProcessor` already receives `config` as a constructor argument — swap to receiving a per-job config slice instead of the full config. This is a clean refactor because Phase 5 already injected dependencies through constructors.
+
+**Phase to address:** Multi-job config phase — define the per-job schema shape before any code is written; migrating this later is painful.
+
+---
+
+#### MJ-04: Stage Validation Called Once for All Jobs — Wrong Stages Used
+
+**What goes wrong:**
+The current `validateStages()` is called once at startup and returns a single `stageMap`. That map is then used throughout the run. For multi-job, each job opening in BambooHR has its own pipeline with its own stage IDs. If `validateStages()` is only called once (for Job 1's pipeline), the stageMap built for Job 1 is used for Job 2's stage moves. BambooHR returns HTTP 200 for a valid-but-wrong stage ID, so candidates get silently moved to Job 1's stages while in Job 2's pipeline — producing corrupt ATS state.
+
+**Why it happens:**
+The existing code calls `validateStages(config)` and passes the whole config. Developers add the outer job loop but forget to call `validateStages()` per job.
+
+**How to prevent:**
+Call `validateStages(jobConfig)` inside the per-job loop, passing only the relevant job config slice. Each job gets its own `stageMap`. The extra API calls are acceptable because the outer loop runs at most a handful of jobs, not hundreds.
+
+**Phase to address:** Multi-job config phase — update ScreeningPipeline.run() to call validateStages inside the per-job block, not in a one-time preamble.
+
+---
+
+#### MJ-05: Run Time Grows Linearly with Job Count — Cron Window Exceeded
+
+**What goes wrong:**
+A single-job run typically completes in under 2 minutes (a few candidates, sequential processing). With N jobs, each with their own candidate batch, the total run time grows linearly. A cron window of `0 11 * * *` (daily at 11am) doesn't enforce a timeout on `docker run`. If one job has an unusually large batch (post-launch surge of applicants), the container may run for 20+ minutes. If the next cron trigger fires and the previous run is still active, two containers run concurrently — sharing the BambooHR rate limit and potentially double-processing candidates.
+
+**Why it happens:**
+The original design assumed "a small daily batch." Multi-job scales this assumption without questioning it.
+
+**How to prevent:**
+Add a global run timeout: set `--stop-timeout` on `docker run`, or implement a `Promise.race()` at the top level with a wall-clock deadline. Log elapsed time per job in the summary. Add a startup check: if a `.lock` file exists at the mounted volume path and was created within the last 4 hours, exit immediately with a log line `[main] Previous run still active — skipping.` This is the lightweight idempotency guard that was already deferred from v1.0 (SAFE-03 in STATE.md) and becomes critical for multi-job.
+
+**Phase to address:** Multi-job config phase — add the `.lock` file guard when implementing the outer job loop; it directly prevents the worst-case overlap scenario.
+
+---
+
+### Area 2: EC2 / Terraform Deployment
+
+---
+
+#### TF-01: `user_data` Runs Only on First Boot — Configuration Drift Goes Undetected
+
+**What goes wrong:**
+EC2 `user_data` (cloud-init scripts) runs exactly once: on the first boot after instance creation. If you update your Terraform configuration — changing the cron schedule, updating an environment variable, or adding a new package — the `terraform apply` shows "update in-place" (because `user_data_replace_on_change` defaults to `false` since the AWS provider 4.x+ change). The apply completes successfully, but the EC2 instance is still running the old configuration. There is no error and no indication anything is wrong. The instance reboots silently without re-running the script.
+
+**Why it happens:**
+Developers expect `terraform apply` to converge the running state to the desired state, the way it does for security groups or tags. For `user_data`, it does not — it only converges the instance *metadata*, not the running configuration inside the instance.
+
+**How to prevent:**
+Make `user_data` truly idempotent: every script operation must be safe to re-run (install packages with `--no-upgrade`, write files with `tee` rather than `>>`, register cron jobs by overwriting not appending — the existing `install.sh` already does this correctly with the grep-then-write crontab pattern). Set `user_data_replace_on_change = true` in the Terraform `aws_instance` block so that any change to `user_data` triggers a full instance replacement, making the behavior predictable. Document that instance replacement is the expected apply mechanism, not in-place update. For the short-lived cron container pattern, instance replacement is a non-event: there is no in-flight workload to interrupt.
+
+**Phase to address:** EC2/Terraform phase — set `user_data_replace_on_change = true` from day one; do not leave it at the default.
+
+---
+
+#### TF-02: Secrets in Terraform State and Plan Files
+
+**What goes wrong:**
+If API keys (BambooHR, OpenAI) are passed into Terraform as `variable` values and rendered into `user_data` scripts (e.g., inline into a heredoc that writes a `.env` file), those secret values are stored in the Terraform state file in plaintext. Anyone with read access to the state file — including CI/CD pipelines, developers with S3 read permission, and future incident responders — can extract the keys. Terraform plan files (`.tfplan`) also contain the same values.
+
+**Why it happens:**
+The simplest Terraform pattern for "put this value on the machine" is to interpolate a `var.api_key` into `user_data`. It works. The state storage consequence is invisible.
+
+**How to prevent:**
+Store secrets in AWS SSM Parameter Store (type `SecureString`) before running Terraform. In `user_data`, fetch the secrets at boot time using the AWS CLI against the SSM API, not from Terraform variables:
+
+```bash
+export BAMBOOHR_API_KEY=$(aws ssm get-parameter --name /screener/bamboohr-api-key --with-decryption --query Parameter.Value --output text)
+```
+
+Terraform only stores the SSM parameter *name* (a non-secret string), not the value. The EC2 instance's IAM role grants `ssm:GetParameter` for those specific parameter paths. Use `sensitive = true` on any Terraform output or variable that does touch secret values (prevents them from appearing in `terraform output` unless explicitly requested with `-raw`). Store Terraform state in S3 with server-side encryption (KMS) and DynamoDB locking (or the newer S3 native locking with `use_lockfile = true` in Terraform AWS provider 5.x+).
+
+**Phase to address:** EC2/Terraform phase — SSM pattern must be designed before any `user_data` script is written; retrofitting it after secrets are already in state requires rotating all keys.
+
+---
+
+#### TF-03: IAM Role Granted More Than It Needs
+
+**What goes wrong:**
+The EC2 instance needs three permissions: pull from ECR, read secrets from SSM, and write to CloudWatch Logs (optional but common). Developers often grant `AmazonEC2ContainerRegistryFullAccess` (allows creating and deleting repositories) and `AmazonSSMFullAccess` (allows writing parameters and managing SSM sessions) instead of the narrower read-only equivalents. Over-permissioned instance roles are a significant blast radius in the event of instance compromise: an attacker can exfiltrate all SSM parameters, push malicious images to ECR, or pivot to other AWS resources.
+
+**Why it happens:**
+AWS managed policies are convenient. Finding the exact `Action` list for least-privilege IAM takes research. Developers prioritize getting it working over getting it scoped.
+
+**How to prevent:**
+Write a custom IAM policy with exactly the required actions and resource ARNs:
+
+```json
+{
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["ecr:GetAuthorizationToken"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+      "Resource": "arn:aws:ecr:REGION:ACCOUNT:repository/bamboohr-screener"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter"],
+      "Resource": [
+        "arn:aws:ssm:REGION:ACCOUNT:parameter/screener/*"
+      ]
+    }
+  ]
+}
+```
+
+`ecr:GetAuthorizationToken` requires `Resource: *` by AWS design — this is expected and documented. All other resources should use exact ARNs. Do not use `Resource: *` for SSM.
+
+**Phase to address:** EC2/Terraform phase — write the inline IAM policy in Terraform before creating the instance; do not start from a managed policy and trim later.
+
+---
+
+#### TF-04: ECR Token Expires Every 12 Hours — Unattended Pulls Fail
+
+**What goes wrong:**
+ECR uses temporary tokens valid for exactly 12 hours. If the deploy script logs in once at deploy time (by running `aws ecr get-login-password | docker login ...`), the Docker daemon caches that token. Any `docker pull` that happens more than 12 hours after the last login will fail with `no basic auth credentials` or `401 Unauthorized`. For a daily cron job that runs `docker pull` to check for updates, this means the pull fails on any day where the last login was more than 12 hours ago.
+
+**Why it happens:**
+Manual `docker login` works perfectly in a CI/CD pipeline where each run starts fresh. On a persistent EC2 instance, there is no "fresh run" — the Docker daemon keeps cached credentials that silently expire.
+
+**How to prevent:**
+Install the Amazon ECR Credential Helper (`amazon-ecr-credential-helper`) on the EC2 instance. Configure `~/.docker/config.json` to use it:
+
+```json
+{
+  "credHelpers": {
+    "ACCOUNT.dkr.ecr.REGION.amazonaws.com": "ecr-login"
+  }
+}
+```
+
+The credential helper automatically fetches a fresh ECR token on every `docker pull` using the instance's IAM role — no cached tokens, no expiry problem. This is the correct pattern for persistent EC2 instances. The `user_data` script should install the credential helper as part of initial setup (`apt install amazon-ecr-credential-helper` on Ubuntu or the equivalent binary install on Amazon Linux 2023).
+
+Alternatively: run `aws ecr get-login-password | docker login` inside the cron wrapper script itself (before `docker pull`). Since the cron fires once daily, this ensures a fresh token on every run. The credential helper approach is cleaner and does not require the AWS CLI to be available in the same shell context.
+
+**Phase to address:** EC2/Terraform phase — `user_data` must install the ECR credential helper; do not use a one-time `docker login` in the deploy script.
+
+---
+
+#### TF-05: Security Group Too Permissive — Instance Exposed to Internet
+
+**What goes wrong:**
+When creating a security group for the EC2 instance in Terraform, developers frequently use `cidr_blocks = ["0.0.0.0/0"]` for all inbound rules to avoid SSH access issues during testing. The screener runs as a cron-triggered container with no inbound traffic requirements. An open security group exposes the instance to port scanners and brute-force attacks with no benefit.
+
+**Why it happens:**
+Copy-paste from tutorials that assume you need SSH access. The screener container doesn't expose any ports, so developers don't notice the security group is irrelevant to the application but relevant to the host.
+
+**How to prevent:**
+The security group for this instance should have zero inbound rules — no SSH, no HTTP, nothing. All outbound rules are fine (HTTPS to BambooHR, OpenAI, ECR, SSM). If SSH is needed for debugging, use AWS Systems Manager Session Manager (SSM Sessions) instead of an open SSH port — it requires no inbound security group rule and logs all commands via CloudTrail. In Terraform: `ingress = []` (empty inbound rules block).
+
+**Phase to address:** EC2/Terraform phase — define the security group with explicit empty ingress before reviewing with any security check.
+
+---
+
+#### TF-06: `user_data` Contains Credentials Visible in AWS Console
+
+**What goes wrong:**
+Even after removing secrets from Terraform variables (per TF-02), it is easy to accidentally write a `user_data` script that echoes values into shell variables in ways that get logged. The EC2 instance's `user_data` is visible in the AWS Console under Instance Settings → User Data — in plaintext to anyone with `ec2:DescribeInstanceAttribute` permission. If the `user_data` script constructs a `.env` file by concatenating literal values (even fetched from SSM at boot), the values may appear in `set -x` debug output or shell history.
+
+**Why it happens:**
+Developers add `set -x` to debug boot scripts — reasonable locally, dangerous on an instance that fetches secrets at boot.
+
+**How to prevent:**
+Never use `set -x` in any script that handles credentials. Redirect sensitive variable assignments to `/dev/null` if debug logging is needed. Fetch SSM values and export them directly into the Docker run environment without writing them to disk:
+
+```bash
+BAMBOOHR_API_KEY=$(aws ssm get-parameter --name /screener/bamboohr-api-key --with-decryption --query Parameter.Value --output text 2>/dev/null)
+docker run --rm -e BAMBOOHR_API_KEY="$BAMBOOHR_API_KEY" ...
+```
+
+Do not write a `.env` file to disk on the EC2 instance; pass credentials directly to `docker run -e`. This avoids the risk of `.env` files being readable by other users or processes on the host.
+
+**Phase to address:** EC2/Terraform phase — review the cron wrapper script and user_data for any credential-handling before merging.
+
+---
+
+### Area 3: Deploy Scripts
+
+---
+
+#### DS-01: Deploy Script Assumes AWS CLI Credentials Are Configured — Fails Silently in Different Environments
+
+**What goes wrong:**
+A deploy script that pushes to ECR with `aws ecr get-login-password | docker login ...` works on the developer's macOS because `~/.aws/credentials` or an SSO session is active. The same script fails in CI/CD or on a different machine with a cryptic `Unable to locate credentials` error that exits with code 255, not a meaningful error. If the script uses `set -e`, it stops there; if it doesn't, `docker push` runs with expired credentials and fails with `401 Unauthorized` rather than "credentials missing".
+
+**Why it happens:**
+The developer tests the script in their own environment and it works. They don't test it in a fresh environment or document the pre-requisite credential setup.
+
+**How to prevent:**
+Add an explicit credential check at the top of the script:
+
+```bash
+aws sts get-caller-identity --query Account --output text > /dev/null || {
+  echo "ERROR: AWS credentials not configured. Run 'aws sso login' or set AWS_PROFILE."
+  exit 1
+}
+```
+
+This runs before any ECR or Docker operations and produces a useful error message. Document in the script header which AWS profile or credential method is expected. Always use `set -euo pipefail` at the top (the existing `install.sh` does this correctly — apply the same pattern to the deploy script).
+
+**Phase to address:** Deploy scripts phase — add the credential preflight check before any ECR interaction.
+
+---
+
+#### DS-02: `docker push` Pushes to Wrong Region or Account
+
+**What goes wrong:**
+ECR repository URLs are account and region-specific: `123456789012.dkr.ecr.eu-west-1.amazonaws.com/bamboohr-screener`. If the deploy script hardcodes the ECR URL rather than deriving it from Terraform outputs or AWS account metadata, a developer with a different default region (`AWS_DEFAULT_REGION`) or a different AWS account (dev vs. prod) accidentally pushes to the wrong registry — or fails to push at all because the repository doesn't exist in that account/region.
+
+**Why it happens:**
+ECR URLs look like constants. Developers copy-paste from a one-time setup and hardcode them. The mistake is invisible if the push succeeds (the image lands in the wrong account) or fails with an authentication error that doesn't mention the actual problem.
+
+**How to prevent:**
+Derive the ECR URL dynamically in the deploy script rather than hardcoding it:
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGION=$(aws configure get region)
+ECR_URL="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/bamboohr-screener"
+```
+
+Alternatively, output the ECR repository URL from Terraform (`output "ecr_repository_url"`) and read it in the deploy script with `terraform output -raw ecr_repository_url`. This makes the deploy script derive truth from Terraform, not from hardcoded strings.
+
+**Phase to address:** Deploy scripts phase — derive ECR URL from environment/Terraform output from the beginning; never hardcode account IDs or regions.
+
+---
+
+#### DS-03: EC2 Update Script Uses SSH — Credential Management and Firewall Problem
+
+**What goes wrong:**
+The naive "update the running EC2 instance" approach is: SSH into the instance, run `docker pull`, restart the cron container. This requires maintaining SSH keys, keeping port 22 open in the security group (contradicting TF-05), and managing key rotation. Storing an SSH private key in CI/CD secrets is a common credential leak vector. If the key is ever rotated or the instance is replaced by Terraform, the key in CI/CD becomes stale.
+
+**Why it happens:**
+SSH is the traditional way to run remote commands on Linux. It's the first tool developers reach for.
+
+**How to prevent:**
+For this workload, there is no need to push updates to the EC2 instance at deploy time. The instance's cron job runs `docker pull` before `docker run`. The deploy script only needs to push a new image to ECR; the instance picks it up on the next scheduled run. This is the correct pattern for a cron-triggered short-lived container:
+
+```
+Deploy script (runs locally/CI):
+  1. docker build + docker tag
+  2. aws ecr get-login-password | docker login
+  3. docker push
+
+EC2 cron (runs daily):
+  0 11 * * * /opt/screener/run.sh
+
+/opt/screener/run.sh:
+  aws ecr get-login-password | docker login ...   # (or use ECR credential helper)
+  docker pull $ECR_URL:latest
+  docker run --rm -e ... $ECR_URL:latest
+```
+
+No SSH required. No port 22 open. No key management. The one delay is that the EC2 instance runs the new image on the *next* cron trigger, not immediately after pushing — which is acceptable for a daily screener.
+
+If immediate update is required, use `aws ssm send-command` to run a shell command on the instance via Systems Manager — no SSH port, no key management, audited via CloudTrail.
+
+**Phase to address:** Deploy scripts phase — design the pull-on-run pattern into the cron wrapper script from the start; document that "deploy = push to ECR" not "push to ECR + SSH to instance."
+
+---
+
+#### DS-04: Deploy Script Tags Only `latest` — Rollback Impossible
+
+**What goes wrong:**
+If the deploy script only tags and pushes `latest`, rolling back to a previous version requires rebuilding the old image from source. If the build environment has changed (Node.js version bump, dependency update) or the source is ambiguous (the current commit on `main` is now the broken one), reconstruction is difficult. ECR allows up to 1,000 images per repository — not using versioned tags wastes this safety net entirely.
+
+**Why it happens:**
+`latest` is the default Docker convention. It requires zero thought to use. Developers don't plan for rollback until they need one.
+
+**How to prevent:**
+Tag with both `latest` and a content-addressed tag in the deploy script:
+
+```bash
+GIT_SHA=$(git rev-parse --short HEAD)
+docker tag bamboohr-screener:latest $ECR_URL:$GIT_SHA
+docker tag bamboohr-screener:latest $ECR_URL:latest
+docker push $ECR_URL:$GIT_SHA
+docker push $ECR_URL:latest
+```
+
+In the EC2 cron wrapper, use `latest` for normal operation (always picks up the newest image). To roll back, update the cron wrapper to pull a specific SHA tag instead of `latest`. Set an ECR lifecycle policy to retain the last 10 images and expire older ones to avoid unbounded storage growth.
+
+**Phase to address:** Deploy scripts phase — add SHA tagging from the first deploy script; it costs one extra line and zero infrastructure.
+
+---
+
+#### DS-05: Sensitive Values Leak Through Shell History or Script Output
+
+**What goes wrong:**
+Deploy scripts that echo environment variables for debugging (`echo "API_KEY=$BAMBOOHR_API_KEY"`) or pass credentials as shell arguments (`docker run -e BAMBOOHR_API_KEY=abc123 ...`) expose secrets in shell history (`~/.bash_history`), `ps aux` output (command line arguments are visible to all users on the host), and CI/CD log files. A `docker run` with inline `-e KEY=VALUE` arguments is visible to any user who can run `ps aux` on the host at the moment the container starts.
+
+**Why it happens:**
+Debugging during development requires seeing values. The pattern gets committed without removing the debug output. Passing `-e KEY=VALUE` inline is the simplest way to get variables into a container.
+
+**How to prevent:**
+- For the deploy script (local/CI): never echo credential values. Echo only the parameter *name* (`echo "Using SSM parameter: /screener/bamboohr-api-key"`).
+- For `docker run` on EC2: use `--env-file` with a file written to a tmpfs (in-memory) location, or pass values as `-e KEY="$VALUE"` where `$VALUE` is a shell variable (not a literal) — shell variable expansion is not visible in `ps aux`.
+- Alternatively (cleanest): inject credentials from SSM at the start of the wrapper script into a temporary file in `/run/secrets/` (a RAM-backed tmpfs on modern Linux), mount that file into the container, delete it after `docker run` completes.
+- Set `HISTIGNORE="*BAMBOOHR*:*OPENAI*"` in the shell profile used by cron to prevent sensitive command lines from being written to history.
+
+**Phase to address:** Deploy scripts phase — audit the wrapper script for any literal credential output before merging.
+
+---
+
+#### DS-06: Terraform `apply` in CI Requires Broad IAM Permissions — Over-Permissioned CI Credentials
+
+**What goes wrong:**
+Running `terraform apply` requires IAM permissions to create EC2 instances, security groups, IAM roles, SSM parameters, ECR repositories, and S3 buckets. If a single set of long-lived IAM access keys is used for both the CI pipeline and the developer's local environment, a compromised key has a blast radius equal to all those resource types. Long-lived access keys also cannot be rotated automatically.
+
+**Why it happens:**
+CI/CD setup is often an afterthought. The developer uses their own IAM user credentials locally, copies them into CI/CD secrets, and ships it.
+
+**How to prevent:**
+Use a dedicated IAM role for CI/CD with `sts:AssumeRole` from the CI/CD provider (GitHub Actions OIDC is the correct pattern for GitHub-hosted runners — no long-lived keys at all). The role should have only the permissions needed to run `terraform apply` for this specific project, scoped to the resource ARNs Terraform will manage. Separate the "apply Terraform" role from the "push to ECR" role. For local development, use AWS SSO or temporary credentials from `aws sts assume-role`.
+
+**Phase to address:** EC2/Terraform phase — create the CI/CD IAM role in Terraform itself (self-referential, but achievable with `terraform import` for the initial role); document the OIDC setup.
+
+---
+
+## v1.0 Pitfalls (Original Screening Agent Domain)
+
+---
+
+### Critical Pitfalls
+
+#### Pitfall 1: Double-Processing Candidates — No Idempotency Guard
 
 **What goes wrong:**
 The agent runs daily via cron. If a candidate is in "New" status and the run crashes after the OpenAI call but before the BambooHR status-move write, or the BambooHR write silently fails, the candidate remains in "New" on the next run and gets re-evaluated. GPT-4o generates a different comment (it is stochastic), a second comment gets posted to BambooHR, and the stage move fires again — possibly conflicting with a recruiter who manually moved the candidate in between.
@@ -29,13 +413,13 @@ Phase 1 (BambooHR integration foundation) — bake the idempotency log into the 
 
 ---
 
-### Pitfall 2: BambooHR Pipeline Stage IDs Are Not Human-Readable — Wrong Stage Moves
+#### Pitfall 2: BambooHR Pipeline Stage IDs Are Not Human-Readable — Wrong Stage Moves
 
 **What goes wrong:**
 BambooHR hiring pipeline stages are identified by integer IDs, not names. The IDs are account-specific and not globally standardized. "Schedule Phone Screen" in one BambooHR account is stage `12`, in another it is stage `7`. The YAML config requires the operator to look up and enter the correct integer IDs. If they enter the wrong IDs — or if a BambooHR admin renames or deletes a stage — the agent silently moves candidates to the wrong stage with no error (BambooHR typically returns HTTP 200 for a valid-but-wrong stage ID that exists in the account).
 
 **Why it happens:**
-The BambooHR ATS API uses numeric IDs throughout. There is no API endpoint that returns "the stage named X has ID Y" in a format that can be auto-resolved at runtime without extra calls. Developers assume names are portable.
+The naming is genuinely confusing and inconsistently documented. Third-party blog posts about the BambooHR API frequently use "candidate" and "applicant" interchangeably, compounding the confusion.
 
 **How to avoid:**
 At startup, call `GET /v1/applicant_tracking/pipelines` (or the equivalent pipeline-fetch endpoint) to retrieve all pipeline stages for the configured job opening. Cross-reference the IDs in the YAML config against the returned stage names and log a startup validation warning if a configured ID is not found or the name does not match expectation. Never trust that a numeric ID is correct without this validation step. Document in the YAML config template that IDs must be obtained from the BambooHR UI or API, not guessed.
@@ -50,171 +434,99 @@ Phase 1 (BambooHR integration) — add startup config validation that verifies s
 
 ---
 
-### Pitfall 3: BambooHR File URL Expiry — PDF Download Fails Silently
+#### Pitfall 3: BambooHR File URL Expiry — PDF Download Fails Silently
 
 **What goes wrong:**
-BambooHR attachment URLs (the URLs returned for CV/resume files on applications) are pre-signed, time-limited URLs. They expire — typically within minutes to a few hours of being issued. If the agent fetches the list of candidates, waits or retries, then attempts to download the PDF using a URL fetched earlier in the same run, the download returns HTTP 403 or redirects to an error page. `pdf-parse` then receives HTML error content instead of binary PDF data, produces garbage text or throws, and the CV is either skipped silently or the agent crashes.
-
-**Why it happens:**
-Developers treat the attachment URL as a stable resource URL rather than a short-lived signed token. The URL looks like a permanent link but has an embedded expiry (often visible as a `Expires=` or `X-Amz-Expires=` parameter in the query string if BambooHR uses S3-backed storage).
+BambooHR attachment URLs are pre-signed, time-limited URLs. They expire — typically within minutes to a few hours of being issued. If the agent fetches the list of candidates, waits or retries, then attempts to download the PDF using a URL fetched earlier in the same run, the download returns HTTP 403 or redirects to an error page. `pdf-parse` then receives HTML error content instead of binary PDF data, produces garbage text or throws, and the CV is either skipped silently or the agent crashes.
 
 **How to avoid:**
-Always download the PDF immediately after fetching the application data — never store the URL for later use. Process each candidate's PDF in the same logical step as fetching their application data. Add a check: if the HTTP response for the PDF is not `Content-Type: application/pdf`, log an error and skip that candidate rather than passing HTML or error text to the parser. Treat PDF download failures as non-fatal per-candidate errors that should be logged and skipped, not as run-stopping crashes.
+Always download the PDF immediately after fetching the application data — never store the URL for later use. Add a check: if the HTTP response for the PDF is not `Content-Type: application/pdf`, log an error and skip that candidate rather than passing HTML or error text to the parser.
 
-**Warning signs:**
-- `pdf-parse` returning empty string or throwing on candidates who definitely have CVs
-- HTTP 403 or redirect responses when downloading attachments
-- Intermittent failures that correlate with long run times (many candidates = URL expires by the time you get to it)
-
-**Phase to address:**
-Phase 2 (PDF parsing and CV extraction) — validate Content-Type before passing bytes to pdf-parse, and download immediately after fetching application metadata.
+**Phase to address:** Phase 2 (PDF parsing and CV extraction).
 
 ---
 
-### Pitfall 4: Image-Only PDFs Return Empty Text — Agent Silently Evaluates Empty CV
+#### Pitfall 4: Image-Only PDFs Return Empty Text — Agent Silently Evaluates Empty CV
 
 **What goes wrong:**
-Many candidates scan their CV as an image and export it as PDF. `pdf-parse` (and most Node.js PDF text-extraction libraries) extract embedded text streams — they do not perform OCR. An image-only PDF returns an empty string. The agent then sends an empty CV text to GPT-4o, which evaluates it as a candidate with no experience, no qualifications, nothing — and may confidently mark them as "does not meet criteria" with a plausible-sounding comment. The candidate is moved to "Reviewed" (rejected) when they may have been perfectly qualified.
-
-**Why it happens:**
-`pdf-parse` does not fail on image-only PDFs — it succeeds with an empty or near-empty result. No error is raised, so the agent proceeds normally. The LLM cannot distinguish "this person has no content" from "this PDF had no extractable text."
+Many candidates scan their CV as an image and export it as PDF. `pdf-parse` does not perform OCR. An image-only PDF returns an empty string. The agent then sends an empty CV text to GPT-4o, which evaluates it as a candidate with no experience and may mark them as rejected with a plausible-sounding comment.
 
 **How to avoid:**
-After extraction, check the word count of the extracted text. If fewer than ~50 words are extracted from a PDF that is larger than ~50KB, treat it as a likely image-only PDF. Log a warning, skip the GPT-4o evaluation, and either: (a) leave the candidate in "New" with a comment noting "CV could not be parsed — manual review required," or (b) add a "Needs Manual Review" tag if the BambooHR API supports it. Do not evaluate a candidate on empty text. Document this limitation in the YAML config README.
+After extraction, check the word count of the extracted text. If fewer than ~50 words are extracted from a PDF larger than ~50KB, treat it as a likely image-only PDF and route to `needsReview`.
 
-**Warning signs:**
-- Extracted text length is 0 or very short for a non-trivial PDF file size
-- High rate of "does not meet criteria" decisions with comments that reference lack of experience, when candidates are plausible applicants
-
-**Phase to address:**
-Phase 2 (PDF parsing) — add a post-extraction validation step before any LLM call.
+**Phase to address:** Phase 2 (PDF parsing).
 
 ---
 
-### Pitfall 5: OpenAI Agent Loop Does Not Terminate — Runaway Token Cost
+#### Pitfall 5: OpenAI Agent Loop Does Not Terminate — Runaway Token Cost
 
 **What goes wrong:**
-The OpenAI Agents SDK runs a tool-calling loop: the model decides when to call tools and when it is "done." If the agent is poorly prompted or the termination condition is ambiguous, the agent may continue calling tools after it has all the information it needs — re-fetching BambooHR data, re-evaluating candidates already evaluated, or looping through candidates in an unbounded way. With `maxTurns` not explicitly set (or set too high) and a job opening that accumulates many candidates over time, a single run can cost tens of dollars in OpenAI API calls.
-
-**Why it happens:**
-Default `maxTurns` in the OpenAI Agents SDK is permissive (or relies on model judgment to stop). Developers focus on making the agent work and defer cost control. The agent's system prompt does not have an explicit "after processing all candidates, output your final summary and stop" instruction.
+Without explicit `maxTurns`, the agent may continue calling tools after it has all the information it needs. With a large backlog, a single run can cost tens of dollars.
 
 **How to avoid:**
-Set `maxTurns` explicitly — a value like `(number_of_candidates * 3) + 5` is a reasonable ceiling, or use a hardcoded safe maximum like 50 for a daily screener. Structure the agent as a thin orchestrator: fetch the candidate list outside the agent loop (plain API call), then run a separate agent invocation per candidate with a very limited turn budget (e.g., `maxTurns: 4` — fetch CV, evaluate, decide, output). Per-candidate invocations are predictable, cost-bounded, and individually retryable. Log total token usage per run in structured JSON to stdout so cost anomalies are visible.
+Set `maxTurns: 5` explicitly on every `run()` call (already implemented in the codebase). Structure the agent as a per-candidate invocation, not a single agent that iterates all candidates.
 
-**Warning signs:**
-- Run time exceeds expected ceiling (e.g., more than 2 minutes per candidate)
-- OpenAI billing dashboard shows spikes on days the cron runs
-- Structured logs show more tool calls than there are candidates
-- Agent invocation never returns (the container runs indefinitely)
-
-**Phase to address:**
-Phase 3 (Agent orchestration) — implement per-candidate agent invocations with explicit maxTurns from day one. Do not build an open-ended single-agent loop.
+**Phase to address:** Phase 3 (Agent orchestration) — already implemented; verify during v1.1 that adding jobs does not relax this constraint.
 
 ---
 
-### Pitfall 6: Timezone Mismatch — Cron Fires at Wrong Time, Candidates Missed
+#### Pitfall 6: Timezone Mismatch — Cron Fires at Wrong Time
 
 **What goes wrong:**
-The macOS crontab uses the local system timezone. The Docker container runs with UTC by default (no TZ environment variable). Logs show timestamps in UTC; the recruiter interprets them as local time. Worse: if the cron is moved to a Linux server in a different timezone, the job fires at the "wrong" local hour. Additionally, BambooHR stores timestamps in the account's configured timezone (which may differ from both the host and Docker), so "applications submitted today" means different things depending on whose clock you use.
-
-**Why it happens:**
-Timezone handling is universally underestimated. Developers test locally where cron, Docker, and BambooHR all happen to align, then deploy to a server where they diverge.
+macOS crontab uses local system timezone. The Docker container runs with UTC. Moving the cron to an EC2 instance in a different timezone changes when the job fires.
 
 **How to avoid:**
-Always log timestamps in ISO 8601 UTC format (`new Date().toISOString()`). Set `TZ=UTC` explicitly in the Dockerfile (or as a Docker run `-e` flag) so the container's timezone is always deterministic. Document the system crontab timezone assumption in the README. Use a filter window of "applications updated in the last 48 hours" rather than "applications from today" to avoid edge-case misses at midnight boundaries. The idempotency log (Pitfall 1) prevents double-processing when the window is wider.
+Set `TZ=UTC` in the Dockerfile. Always log timestamps in ISO 8601 UTC. Use `0 11 * * *` in the cron to mean 11:00 UTC (document this explicitly).
 
-**Warning signs:**
-- Run logs show timestamps that don't match expected local time
-- Candidates who applied at midnight appear in the wrong day's batch
-- Moving the cron to a server changes which candidates get processed
-
-**Phase to address:**
-Phase 4 (Docker + cron wiring) — set TZ=UTC in Dockerfile and document the assumption, use a safe time window in the BambooHR query.
+**Phase to address:** Phase 4 (Docker + cron wiring) — also relevant to EC2 deployment in v1.1.
 
 ---
 
-### Pitfall 7: Failed Runs Go Unnoticed — Silent Cron Failures
+#### Pitfall 7: Failed Runs Go Unnoticed — Silent Cron Failures
 
 **What goes wrong:**
-cron does not alert on non-zero exit codes by default on macOS unless mail delivery is configured (which it typically is not). If the Docker container fails to start (image not found, env vars missing), crashes mid-run (unhandled exception), or exits with an error, the recruiter simply does not see new candidates moved. The recruiter may assume no new candidates arrived, when in reality the agent crashed on the first candidate. This can persist for days undetected.
-
-**Why it happens:**
-The "fire and forget" nature of cron is its default behavior. Developers assume they will notice problems; they do not.
+cron does not alert on non-zero exit codes by default. If the Docker container fails to start (image not found, env vars missing), the recruiter simply does not see new candidates moved.
 
 **How to avoid:**
-The cron command should redirect both stdout and stderr to a dated log file: `docker run ... >> /var/log/bamboo-screener/$(date +\%Y-\%m-\%d).log 2>&1`. Add a health-check convention: the last line of stdout on a successful run should always be a JSON object with `{ "status": "complete", "processed": N, "errors": M }`. A simple wrapper script can check for this sentinel line and send an alert (email, curl to a webhook) if it is absent. For a locally-run tool, even checking the log file manually once after first deployment is better than nothing.
+Redirect both stdout and stderr to a dated log file. The last line of stdout on a successful run is always a JSON summary object. A wrapper script can check for this sentinel line and alert if it is absent.
 
-**Warning signs:**
-- No log file created for a given day
-- Log file exists but contains only startup lines, no "complete" sentinel
-- Recruiter reports no candidates were processed on a day where applications were known to have arrived
-
-**Phase to address:**
-Phase 4 (Docker + cron wiring) — implement structured final-status logging and a log-file wrapper from the start.
+**Phase to address:** Phase 4 (Docker + cron wiring) — the existing `ScreeningPipeline` already prints the JSON summary on stdout.
 
 ---
 
-### Pitfall 8: GDPR / Data Privacy — CV Text Sent to OpenAI Without Disclosure
+#### Pitfall 8: GDPR / Data Privacy — CV Text Sent to OpenAI Without Disclosure
 
 **What goes wrong:**
-The agent sends raw CV text (name, address, employment history, education, potentially special category data) to OpenAI's API for processing. This is personal data under GDPR. Unless the company has a Data Processing Agreement (DPA) with OpenAI and candidates have been informed that their data may be processed by third-party AI systems (typically in the job application consent), this constitutes unlawful processing.
-
-**Why it happens:**
-Engineering-led projects ship the technical feature without looping in legal or HR. The developer is not the data controller; the recruiter/company is.
+Raw CV text (personal data under GDPR) is sent to OpenAI's API. Without a signed DPA and candidate consent disclosure, this constitutes unlawful processing.
 
 **How to avoid:**
-Before deploying to production, verify: (1) OpenAI's DPA has been signed (OpenAI offers a DPA for API customers — distinct from ChatGPT ToS); (2) the job application form includes disclosure that applications may be processed by AI tools; (3) only the minimum necessary data is sent (do not send full CV if only specific fields are needed for evaluation); (4) the OpenAI API is called with the opt-out flag for model training if available (`user` parameter, data retention settings). Add a comment in the code at the OpenAI call site referencing the DPA requirement so future developers cannot miss it.
+Before enabling `LIVE_MODE=true`: (1) sign OpenAI DPA, (2) add AI processing disclosure to the job application form. This is a pre-deployment legal requirement, not a code task.
 
-**Warning signs:**
-- No DPA found in the company's vendor agreements with OpenAI
-- Job application form has no AI processing disclosure
-- CV text sent to OpenAI includes fields not needed for the evaluation criteria
-
-**Phase to address:**
-Phase 1 (project setup) — this is a pre-deployment blocker, not a code issue. Flag in README and in the YAML config template that legal review is required before production use.
+**Phase to address:** Phase 1 (project setup) — pre-deployment blocker.
 
 ---
 
-### Pitfall 9: Applicant vs. Candidate Terminology Mismatch in BambooHR API
+#### Pitfall 9: Applicant vs. Application Entity Confusion in BambooHR API
 
 **What goes wrong:**
-BambooHR's ATS API distinguishes between "applications" (a submission for a specific job opening), "applicants" (the person), and "candidates" (sometimes used interchangeably, sometimes referring to the applicant record). The API endpoint paths use `applicant_tracking/applications`, `applicant_tracking/applicants`, and `applicant_tracking/jobs`. Developers conflate these and build code that fetches applicants (the person record) when they need applications (the job-specific submission), missing application-specific data like answers to job-specific questions, the current pipeline stage, and the resume attachment for that specific application.
-
-**Why it happens:**
-The naming is genuinely confusing and inconsistently documented. Third-party blog posts about the BambooHR API frequently use "candidate" and "applicant" interchangeably, compounding the confusion.
+Developers conflate applicant IDs (person record) with application IDs (job-specific submission). Stage moves, comments, and CV attachments live on the Application entity — using the wrong ID produces silent errors or affects the wrong record.
 
 **How to avoid:**
-Always read the BambooHR ATS API reference directly. The entity model is: a `Job` has many `Applications`; each `Application` has one `Applicant` (person). Pipeline stage, comments, and attachments live on the `Application`, not on the `Applicant`. Fetch by `GET /v1/applicant_tracking/applications?jobId={id}&status=active` to get the right entity. Never use `applicantId` where `applicationId` is required and vice versa — they are different integer namespaces.
+All BambooHR write operations must use `applicationId`, never `applicantId`. This is enforced in the codebase (Phase 5) but must be verified when adding new write paths in v1.1.
 
-**Warning signs:**
-- API calls return data but CV attachment fields are null
-- Pipeline stage changes are not reflected after write
-- Application-specific answers are missing from the response
-
-**Phase to address:**
-Phase 1 (BambooHR integration) — read the API reference and define the entity model explicitly in code comments before writing any integration code.
+**Phase to address:** Phase 1 and any new write paths.
 
 ---
 
-### Pitfall 10: BambooHR API Rate Limiting — No Retry Logic, Run Crashes
+#### Pitfall 10: BambooHR API Rate Limiting — No Retry Logic, Run Crashes
 
 **What goes wrong:**
-BambooHR's API enforces rate limits. The documented limit is 200 API requests per minute (per API key). For a single job opening with a moderate backlog of candidates, a naive implementation that fires all requests concurrently can hit this limit, receive HTTP 429 responses, and crash if there is no retry logic. The 429 response typically includes a `Retry-After` header, but without explicit handling, the code throws or continues with failed data.
-
-**Why it happens:**
-Developers process candidates in a `Promise.all()` for speed, or write sequential code that doesn't bother with backoff because "it'll never hit 200/min for a small job posting." On a backlog-clearing first run (20+ candidates), concurrent PDF downloads plus status updates plus comment posts can easily exceed the limit.
+BambooHR enforces rate limits (documented: 200 requests/minute per API key). With N jobs each with their own candidate batch, multi-job processing makes rate limit violations more likely.
 
 **How to avoid:**
-Process candidates sequentially (one at a time in a for-of loop, not Promise.all). For a daily screener, throughput is not the priority — correctness and reliability are. Implement a simple exponential backoff retry wrapper (3 retries, 1s/2s/4s delays) around every BambooHR API call. Log each 429 occurrence so rate limit patterns are visible. Sequential processing of a typical daily batch (5–20 new candidates) will complete well within 2 minutes even with per-candidate retries.
+Process candidates sequentially (for-of loop, not Promise.all). Implement exponential backoff retry (3 retries, 1s/2s/4s delays) around every BambooHR API call. With multi-job support, a separate sequential outer loop (job by job) and inner sequential loop (candidate by candidate) keeps the request rate well within limits.
 
-**Warning signs:**
-- HTTP 429 responses in logs
-- Run crashes or partial processing on days with many new applications
-- BambooHR API calls succeed for the first N candidates and fail for the rest
-
-**Phase to address:**
-Phase 1 (BambooHR integration) — wrap all API calls in a retry utility from the start, not after observing 429s in production.
+**Phase to address:** Phase 1 — more critical in v1.1 with multi-job.
 
 ---
 
@@ -222,106 +534,53 @@ Phase 1 (BambooHR integration) — wrap all API calls in a retry utility from th
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Single monolithic agent that fetches + evaluates + writes | Simpler initial code | Untestable, hard to add retry logic, cost unpredictable | Never — split into orchestrator + per-candidate agent |
-| Hardcoding stage IDs in source instead of YAML | Faster initial run | Any BambooHR account change requires code change, breaks for new deployments | Never |
-| Skipping idempotency log for "v1" | Faster to ship | Double-processing and double-comments in production, very hard to undo | Never — adds 10 lines of code |
-| `Promise.all()` for concurrent candidate processing | Faster batch | Rate limit crashes on any run with >10 candidates | Never for a screener — correctness beats speed |
-| Passing full CV text to GPT-4o regardless of length | Simplest code path | Token cost blowup on long CVs (some CVs are 10k+ tokens), context window exceeded | Acceptable for MVP if a character truncation cap is added |
-| Not validating YAML config at startup | Simpler code | Silent misconfiguration produces wrong stage moves or skipped evaluations | Never — fail fast with clear error messages |
+| Global fieldMap not per-job | Simpler schema | Job B's rules silently use Job A's field mappings | Never for multi-job |
+| No job-level try/catch in outer loop | Simpler code | One bad job aborts all remaining jobs | Never |
+| `user_data_replace_on_change = false` | Avoids instance replacement | Config changes silently don't apply | Never for a config-driven tool |
+| Long-lived IAM access keys in CI | Simplest CI setup | Key compromise = full infrastructure access | Never; use OIDC |
+| `docker login` once at deploy time | Simple auth flow | Token expires after 12h, unattended pulls fail | Never for persistent EC2 |
+| SSH-based EC2 update | Familiar workflow | Port 22 open, key management burden | Never; use pull-on-cron instead |
+| Secrets in Terraform variables | Simple interpolation | Values stored in state file in plaintext | Never |
+| Only push `latest` tag | Zero extra commands | Rollback requires rebuilding from source | Never |
 
 ---
 
-## Integration Gotchas
+## Phase-Specific Warnings
 
-| Integration | Common Mistake | Correct Approach |
-|-------------|----------------|------------------|
-| BambooHR API | Using `Authorization: Basic` with only the API key as username, forgetting the password field | BambooHR Basic auth requires `apiKey:x` (any string as password) — omitting the `:x` causes 401 |
-| BambooHR API | Fetching all applications without filtering by job opening ID | Results include applications across all jobs; always filter by `jobId` |
-| BambooHR API | Assuming `GET /applications` response includes the resume URL directly | Resume/CV attachment may require a separate `GET /v1/applicant_tracking/applications/{id}` detail call to get attachment metadata, then another call to download |
-| BambooHR API | Using the generic employee API for ATS data | ATS data lives under `/v1/applicant_tracking/`, not the main `/v1/` employee endpoints — different data model |
-| pdf-parse | Calling `pdf.text` synchronously | pdf-parse is async; must `await pdfParse(buffer)` and access `.text` on the resolved result |
-| pdf-parse | Passing a file path string to pdf-parse | pdf-parse requires a `Buffer`, not a path — must `fs.readFileSync()` or fetch the bytes first |
-| OpenAI Agents SDK | Assuming the agent stops after the last tool call | The agent continues until it outputs a final message; prompt must explicitly instruct it to return a structured result and stop |
-| Docker + env vars | Putting credentials in the Dockerfile `ENV` | Credentials end up in the image layer history; always pass via `docker run -e` or a `.env` file excluded from version control |
-
----
-
-## Performance Traps
-
-| Trap | Symptoms | Prevention | When It Breaks |
-|------|----------|------------|----------------|
-| Evaluating all candidates concurrently with GPT-4o | All evaluations finish fast but costs spike and rate limits hit | Process sequentially; daily screener does not need parallelism | Any batch >5 candidates with concurrent OpenAI calls |
-| Sending full raw CV text without truncation | Occasional OpenAI context window exceeded errors for long CVs | Cap input text at ~6,000 tokens (~24,000 chars) before sending to GPT-4o | CVs with tables, long employment histories, or OCR-extracted multi-page documents |
-| Loading the entire processed-candidates log into memory | Fine for 1,000 entries, slow for 10,000+ | Use a simple Set of processed IDs; the log file stays small for a single-job screener | Never a real issue at this project's scale |
-| Re-fetching the pipeline stage list on every candidate | Unnecessary API calls, slower runs | Fetch once at startup and cache in memory for the run | Becomes a rate-limit contributor at scale |
-
----
-
-## Security Mistakes
-
-| Mistake | Risk | Prevention |
-|---------|------|------------|
-| Committing `.env` file with API keys to git | API key exposure, unauthorized BambooHR and OpenAI access | Add `.env` to `.gitignore` before first commit; use `.env.example` with placeholder values |
-| Logging full CV text to stdout | CV personal data ends up in log aggregation systems, violates GDPR | Log only `applicationId`, `decision`, `criteria_matched` — never CV text content |
-| Logging the OpenAI API key in error messages | Key exposure in log files | Catch errors from OpenAI SDK; log the error type and message only, not the request headers |
-| YAML config mounted as world-readable volume | Any process on the host can read stage IDs and rules | Restrict volume mount permissions; this is a minor risk for a local setup but matters on a shared server |
-| Trusting extracted CV text for SQL or shell operations | Prompt injection if CV content is passed unsanitized into shell commands | Not a risk here (no shell calls with CV text), but relevant if logging infrastructure uses structured queries |
-
----
-
-## "Looks Done But Isn't" Checklist
-
-- [ ] **Idempotency:** Agent appears to process candidates correctly — verify it skips already-processed candidates on a second run with the same data
-- [ ] **Stage validation:** YAML config has stage IDs entered — verify those IDs resolve to the correct stage names by calling the pipeline endpoint at startup
-- [ ] **Empty CV handling:** PDF parsing returns text — verify behavior when a real image-only PDF is used (print a CV as image PDF and test)
-- [ ] **Error recovery:** Agent processes one candidate successfully — verify it continues to the next candidate after a PDF download failure (does not crash the whole run)
-- [ ] **Token logging:** GPT-4o calls work — verify structured logs include `prompt_tokens` and `completion_tokens` per candidate so cost is visible
-- [ ] **Cron failure detection:** Cron job is scheduled — verify the log file contains a completion sentinel line after a successful run
-- [ ] **Docker timezone:** Container runs correctly locally — verify `TZ` is set and timestamps in logs are UTC
-- [ ] **Credential safety:** App works with env vars — verify no credentials appear in `docker inspect`, `docker history`, or log output
-
----
-
-## Recovery Strategies
-
-| Pitfall | Recovery Cost | Recovery Steps |
-|---------|---------------|----------------|
-| Double-processing (comments already posted) | MEDIUM | Manually delete duplicate comments via BambooHR UI; clear the idempotency log; add idempotency before re-running |
-| Wrong stage moves (candidates in wrong pipeline stage) | HIGH | Manually review affected candidates in BambooHR UI; move them back to correct stage; add startup stage validation |
-| Image-only PDFs evaluated as empty | MEDIUM | Identify affected candidates by checking for "no CV text" log entries; flag them for manual review in BambooHR |
-| Agent loop runaway (large OpenAI bill) | HIGH (cost) | Check OpenAI billing; set hard usage limits in OpenAI account settings; implement per-candidate maxTurns immediately |
-| Cron silently failing for days | MEDIUM | Review cron logs; manually run the Docker command to verify it works; add completion sentinel logging |
-| BambooHR API key rotated, agent stops working | LOW | Update env var in `.env` file and in the cron docker run command; verify no API key in code or Dockerfile |
-
----
-
-## Pitfall-to-Phase Mapping
-
-| Pitfall | Prevention Phase | Verification |
-|---------|------------------|--------------|
-| Double-processing (no idempotency) | Phase 1 — BambooHR integration | Run agent twice against same data; confirm second run processes 0 candidates |
-| Wrong stage IDs (no startup validation) | Phase 1 — BambooHR integration | Startup logs show stage name validation output; misconfigured ID produces clear error |
-| BambooHR file URL expiry | Phase 2 — PDF parsing | Test with deliberate delay between metadata fetch and PDF download; verify graceful skip |
-| Image-only PDF returns empty text | Phase 2 — PDF parsing | Use an image-only test PDF; verify agent logs warning and skips evaluation |
-| Agent loop not terminating (no maxTurns) | Phase 3 — Agent orchestration | Verify maxTurns is set; run with a mock candidate and confirm agent exits after N turns |
-| Token cost runaway | Phase 3 — Agent orchestration | Log token counts; test with a long CV to verify truncation cap works |
-| Timezone mismatch | Phase 4 — Docker + cron wiring | Inspect container with `docker exec ... date`; confirm UTC |
-| Silent cron failures | Phase 4 — Docker + cron wiring | Kill run mid-execution; verify no completion sentinel in log; verify alert/detection fires |
-| GDPR / data privacy | Phase 1 — Project setup (pre-code) | DPA confirmed in writing; job application form reviewed by legal |
-| Applicant vs. application entity confusion | Phase 1 — BambooHR integration | Code review: confirm all stage/comment writes use applicationId not applicantId |
-| Rate limiting (no retry logic) | Phase 1 — BambooHR integration | Load test with 20+ candidates; confirm no 429-caused crashes |
+| Phase Topic | Likely Pitfall | Mitigation |
+|-------------|---------------|------------|
+| Multi-job schema | MJ-01: Breaking existing config.yaml | z.union to accept both forms; normalize inside loader |
+| Multi-job loop | MJ-02: No job-level error isolation | Per-job try/catch mirroring SAFE-01 |
+| Multi-job config | MJ-03: Global fieldMap wrong for per-job rules | Move fieldMap inside each job block |
+| Multi-job stages | MJ-04: Single validateStages for all jobs | Call validateStages per job inside loop |
+| Multi-job runtime | MJ-05: Cron overlap with long batch | Add .lock file guard at run start |
+| EC2 user_data | TF-01: Config changes silently don't apply | Set user_data_replace_on_change = true |
+| Terraform state | TF-02: Secrets stored in state plaintext | SSM SecureString + S3 encrypted backend |
+| IAM role | TF-03: Over-permissioned instance role | Inline policy with exact ARNs and minimal actions |
+| ECR auth | TF-04: 12h token expiry breaks unattended pulls | Install amazon-ecr-credential-helper in user_data |
+| Security group | TF-05: Port 22 open for SSH | Zero inbound rules; use SSM Sessions for debug access |
+| user_data | TF-06: Credentials visible in AWS Console | Fetch from SSM at runtime, never write to disk |
+| Deploy script | DS-01: AWS creds not configured, silent fail | sts:get-caller-identity preflight check |
+| Deploy script | DS-02: Push to wrong region/account | Derive ECR URL from aws sts + aws configure |
+| Deploy script | DS-03: SSH-based EC2 update | Pull-on-cron pattern; no SSH required |
+| Deploy script | DS-04: Only latest tag, no rollback | Tag with git SHA + latest on every push |
+| Deploy script | DS-05: Credential leak in shell output | Pass values via shell variables, not literals |
+| Terraform CI | DS-06: Over-permissioned CI credentials | GitHub Actions OIDC role, no long-lived keys |
 
 ---
 
 ## Sources
 
-- BambooHR ATS API reference (https://documentation.bamboohr.com/reference) — training data, MEDIUM confidence; verify current rate limits and endpoint paths before implementation
-- OpenAI Agents SDK documentation and source (https://github.com/openai/openai-agents-python, TypeScript equivalent) — training data, MEDIUM confidence; verify maxTurns API shape against current SDK version
-- `pdf-parse` npm package (https://www.npmjs.com/package/pdf-parse) — training data, HIGH confidence for known limitations (no OCR, async API)
-- GDPR Article 28 (Data Processing Agreements) — HIGH confidence; requirement is stable law
-- Docker TZ environment variable behavior — HIGH confidence; stable Docker behavior
-- macOS crontab timezone behavior — HIGH confidence; stable OS behavior
+- Terraform AWS provider docs: `user_data_replace_on_change` behavior — https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance (HIGH confidence)
+- HashiCorp Terraform sensitive data guide — https://developer.hashicorp.com/terraform/language/manage-sensitive-data (HIGH confidence)
+- AWS ECR private registry authentication — https://docs.aws.amazon.com/AmazonECR/latest/userguide/registry_auth.html (HIGH confidence)
+- Amazon ECR Credential Helper — https://github.com/awslabs/amazon-ecr-credential-helper (HIGH confidence)
+- AWS Secrets Manager vs SSM Parameter Store — https://aws.amazon.com/blogs/security/how-to-choose-the-right-aws-service-for-managing-secrets-and-configurations/ (HIGH confidence)
+- Terraform S3 backend docs — https://developer.hashicorp.com/terraform/language/backend/s3 (HIGH confidence)
+- ECR auth token expiry discussion — https://repost.aws/questions/QUOT8lTHaITkqW0NGB74Pkeg (MEDIUM confidence, community)
+- Zod schema docs (union pattern) — https://zod.dev/api (HIGH confidence)
+- BambooHR ATS API reference — https://documentation.bamboohr.com/reference (MEDIUM confidence — verify endpoint paths against live docs)
 
 ---
-*Pitfalls research for: BambooHR candidate screening agent (TypeScript + OpenAI Agents SDK + Docker)*
-*Researched: 2026-05-01*
+*v1.0 pitfalls researched: 2026-05-01*
+*v1.1 pitfalls (MJ-01–05, TF-01–06, DS-01–06) researched: 2026-05-04*

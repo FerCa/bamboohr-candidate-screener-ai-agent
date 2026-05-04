@@ -1,303 +1,344 @@
-# Stack Research
+# Technology Stack
 
-**Domain:** Automated HR candidate screening agent
-**Researched:** 2026-05-01
-**Confidence:** MEDIUM — all findings from training data (cutoff Aug 2025); Bash/WebSearch/WebFetch tools were unavailable during this research session. Version numbers must be validated against npm/official docs before pinning in package.json.
-
----
-
-## Recommended Stack
-
-### Core Technologies
-
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| Node.js | 22 LTS | Runtime | Active LTS as of 2025; native fetch built-in eliminates `node-fetch` dependency; V8 improvements for async throughput; matches Docker `node:22-alpine` base image |
-| TypeScript | ~5.5 | Type safety across all code | Strict null checks catch BambooHR API shape mismatches early; satisfies operator avoids unsafe casts when shaping raw API responses; project constraint |
-| `@openai/agents` | latest 0.x | OpenAI Agents SDK — agent loop, tool use, tracing | Official SDK from OpenAI for building tool-using agents in TypeScript; provides `Agent`, `Runner`, `tool()` primitives without needing to hand-wire function-call loop; released March 2025 |
-| `openai` | ^4.x | Underlying OpenAI API client | `@openai/agents` depends on this; also useful for direct completions if needed outside the agent loop |
-
-**CONFIDENCE NOTE on `@openai/agents` version:** LOW — package was at `0.x` pre-release as of my training data. Verify current version on npmjs.com before locking.
-
-### Supporting Libraries
-
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| `pdf-parse` | ^1.1.1 | PDF text extraction | Parsing candidate CV PDFs downloaded from BambooHR; pure JS, no native binary dependencies (critical for Alpine Docker); handles multi-page PDFs common in resumes |
-| `js-yaml` | ^4.1.0 | YAML config parsing | Parsing the mounted `config.yaml` with job ID, pipeline stage IDs, and screening rules; v4 is the current stable series with ESM support |
-| `zod` | ^3.x | Runtime schema validation | Validating BambooHR API responses and YAML config against expected shapes; prevents silent failures when API returns unexpected structure; pairs naturally with TypeScript |
-| `node-fetch` | NOT needed | — | Node 22 has built-in `fetch`; do not add this dependency |
-| `axios` | NOT needed | HTTP client | Built-in fetch is sufficient; adds unnecessary bundle weight |
-| `winston` | optional | Structured JSON logging | If structured log middleware is needed; for this project, `console.log(JSON.stringify(...))` to stdout is sufficient and simpler for a short-lived container |
-
-**CONFIDENCE on `pdf-parse`:** MEDIUM — `pdf-parse@1.1.1` is the dominant zero-native-dep option for Node.js PDF text extraction as of Aug 2025. The library is stable but not actively maintained; see Pitfalls section for known quirks.
-
-### Development Tools
-
-| Tool | Purpose | Notes |
-|------|---------|-------|
-| `tsx` | TypeScript execution without separate compile step | Use for development: `npx tsx src/index.ts`; avoids `ts-node` ESM config pain |
-| `esbuild` or `tsc` | Production build | `tsc` for straightforward projects; output to `dist/`; Docker runs compiled JS |
-| Docker `node:22-alpine` | Container base image | Alpine keeps image under 200MB; matches Node 22 LTS runtime |
-| `@types/node` | Node.js type definitions | Required for `Buffer`, `process.env`, `fs` typings |
-| `@types/js-yaml` | YAML library typings | Included in `js-yaml` v4 package itself; no separate install |
-| `@types/pdf-parse` | pdf-parse typings | May need `@types/pdf-parse` from DefinitelyTyped |
+**Project:** BambooHR Candidate Screener
+**Researched:** 2026-05-04
+**Milestone:** v1.1 — Multi-Job & AWS Deployment (addendum to v1.0 stack)
 
 ---
 
-## OpenAI Agents SDK — Key Patterns
+## Existing Stack (unchanged from v1.0)
 
-**CONFIDENCE: MEDIUM** — based on training data from SDK release docs (March 2025).
-
-### Agent Definition
-
-```typescript
-import { Agent, tool, Runner } from "@openai/agents";
-import { z } from "zod";
-
-const fetchCandidatesTool = tool({
-  name: "fetch_new_candidates",
-  description: "Fetch candidates in New stage for the configured job opening",
-  parameters: z.object({ jobId: z.string() }),
-  execute: async ({ jobId }) => {
-    // BambooHR API call here
-  },
-});
-
-const screenerAgent = new Agent({
-  name: "CandidateScreener",
-  model: "gpt-4o",
-  instructions: "You screen HR candidates against provided criteria...",
-  tools: [fetchCandidatesTool, moveCandidateTool, addCommentTool],
-});
-```
-
-### Runner (agent loop)
-
-```typescript
-const result = await Runner.run(screenerAgent, "Screen all new candidates for job X");
-```
-
-`Runner.run()` drives the full tool-call loop: model returns tool calls, SDK executes them, feeds results back, repeats until model returns a final text response or `max_turns` is hit.
-
-### Tool pattern for BambooHR calls
-
-Each BambooHR operation becomes a `tool()` with a Zod schema for parameters. The agent decides which tools to invoke and in what order. Tools should be narrow and single-purpose (fetch list, move stage, add comment) so the model has precise control.
+TypeScript 5 / Node.js 22 LTS (ESM, NodeNext), `@openai/agents` SDK, `pdf-parse`, `js-yaml`, `zod`, Docker `node:22-alpine`. No changes needed to these components.
 
 ---
 
-## BambooHR API — Key Endpoints
+## New Stack Decisions for v1.1
 
-**CONFIDENCE: MEDIUM** — based on BambooHR ATS API documentation as of training data. Endpoint paths should be verified against https://documentation.bamboohr.com/reference before implementation.
+### 1. Multi-Job Config — YAML Schema Extension
 
-### Authentication
+**Decision: extend `config.yaml` to a `jobs:` array; one config file, N job entries.**
 
-BambooHR uses HTTP Basic Auth with an API key:
+The existing `configSchema` in `src/config/schema.ts` defines a single `job:` object at the root. The minimal change is wrapping that shape in an array:
 
+```yaml
+# config.yaml (v1.1)
+jobs:
+  - openingId: "123"
+    stages:
+      intake: "New"
+      pass: "Schedule Phone Screen"
+      fail: "Reviewed"
+    hardRules: { ... }
+    softRules: { ... }
+    fieldMap: { ... }
+  - openingId: "456"
+    stages: { ... }
+    hardRules: { ... }
 ```
-Authorization: Basic base64(API_KEY:x)
+
+**Node.js iteration pattern:** Load once, validate each entry against the existing `configSchema` (or a new `jobEntrySchema`), then call the existing screener function sequentially for each entry. No parallelism needed — the daily cron budget is generous and sequential processing avoids BambooHR rate limits.
+
+```typescript
+// Pseudocode — index.ts
+const jobs = loadConfig(); // returns JobConfig[]
+for (const job of jobs) {
+  await screenJob(job);
+}
 ```
 
-The password is always the literal string `x`. The API key is passed as the username. Base URL pattern: `https://api.bamboohr.com/api/gateway.php/{company_domain}/v1/`
+**Zod schema change:** Wrap the existing `configSchema` in `z.array(configSchema)` or rename existing `job:` key to be the inner schema and introduce a `jobs:` root key. The latter is cleaner and preserves backward compatibility via `.optional()` fallback.
 
-### Relevant ATS Endpoints
-
-| Operation | Method | Path | Notes |
-|-----------|--------|------|-------|
-| List job openings | GET | `/applicant_tracking/jobs` | Returns all job postings; filter by status |
-| Get applicants for job | GET | `/applicant_tracking/jobs/{jobId}/applicants` | Returns candidates; filter by `status` = "New" |
-| Get applicant detail | GET | `/applicant_tracking/applicants/{applicantId}` | Full applicant record including application answers |
-| Get applicant's files | GET | `/applicant_tracking/applicants/{applicantId}/files` | Lists file attachments including CV |
-| Download file | GET | `/applicant_tracking/applicants/{applicantId}/files/{fileId}` | Returns binary PDF |
-| Move pipeline stage | POST | `/applicant_tracking/applications/{applicationId}/status` | Body: `{ "status": "stage_name_or_id" }` |
-| Add comment | POST | `/applicant_tracking/applications/{applicationId}/comments` | Body: `{ "comment": "..." }` |
-
-**CRITICAL UNCERTAINTY:** BambooHR's ATS API has two variants — the legacy "Applicant Tracking" (older) and a newer "Hiring" API. The exact endpoint paths and how to reference pipeline stages (by name vs. numeric ID) differ between them. The YAML config should store stage IDs as opaque values discovered at setup time (list stages endpoint) rather than hardcoding names. This must be verified against current BambooHR API docs before implementation.
-
-**Listing pipeline stages for a job:**
-
-`GET /applicant_tracking/jobs/{jobId}` typically returns available stages/statuses. Stage IDs should be pulled once at setup and stored in config.yaml.
-
-### Rate Limits
-
-BambooHR enforces a rate limit of ~150 API requests per 15-minute window per API key. For a daily screening run over a single job, this is not a concern. No retry logic needed for MVP, but tool execution should log HTTP status on failure.
+**Confidence: HIGH** — straightforward schema refactor, no external dependencies.
 
 ---
 
-## PDF Extraction — `pdf-parse`
+### 2. Docker Registry — ECR (Private)
 
-**CONFIDENCE: MEDIUM**
+**Decision: AWS Elastic Container Registry (ECR), private repository.**
 
-```typescript
-import pdfParse from "pdf-parse";
-import fs from "fs";
+| Criterion | ECR | Docker Hub (Pro) |
+|-----------|-----|-----------------|
+| Cost | ~$0.10/GB-month storage; pulls from same-region EC2 are free | $5/user/month |
+| Auth to EC2 | IAM instance profile — no credentials needed in cron script | Username/token in cron script |
+| Network | In-region pull: zero data transfer cost | Egress charges apply |
+| Lifecycle policies | Built-in; prevent unbounded image accumulation | Manual tagging required |
+| Complexity | Terraform manages the repo alongside the EC2 | Separate account/billing |
 
-const dataBuffer = fs.readFileSync("resume.pdf");
-const data = await pdfParse(dataBuffer);
-const text = data.text; // full text content
-```
+**Verdict:** ECR is the right choice when your runtime is EC2 in the same AWS account. The IAM instance profile means the EC2 instance can pull images with no stored credentials. Docker Hub adds per-user cost and requires storing a token on the instance.
 
-For in-memory buffers downloaded from BambooHR (no temp file write):
+**ECR lifecycle policy (required):** Configure a lifecycle rule to keep only the last N images (3 is sufficient for a daily cron). Without it, every push accumulates forever.
 
-```typescript
-const response = await fetch(attachmentUrl, { headers: authHeaders });
-const arrayBuffer = await response.arrayBuffer();
-const buffer = Buffer.from(arrayBuffer);
-const { text } = await pdfParse(buffer);
-```
+**ARM64 note:** If using t4g (Graviton) EC2, the Docker image must be built for `linux/arm64`. Use `docker buildx build --platform linux/arm64` on macOS (requires QEMU via Docker Desktop) or build natively on an ARM64 CI runner. The `node:22-alpine` base image supports both `linux/amd64` and `linux/arm64` — no Dockerfile changes needed, only the build command changes.
 
-**Known quirk:** `pdf-parse` has a test-mode detection check that can fire unexpectedly when the module is loaded in some test environments (it reads `test/data/05-versions-space.pdf` on import in test mode). This is a non-issue in production Docker runs but can cause confusing errors in Jest. Use `pdf-parse/lib/pdf-parse.js` direct import or mock the module in tests.
+**Confidence: HIGH** — ECR + IAM instance profile is the standard AWS pattern, well-documented and widely used.
 
 ---
 
-## YAML Config Parsing — `js-yaml`
+### 3. Terraform — AWS Provider Version
 
-**CONFIDENCE: HIGH** — `js-yaml` v4 is the established standard; API is stable.
+**Decision: hashicorp/aws provider `~> 6.0` (currently at 6.25.x as of late 2025).**
 
-```typescript
-import yaml from "js-yaml";
-import fs from "fs";
+AWS provider v6.0 was released in April 2025 and is now the current major version. v5 is still in security-patch mode. Start new infrastructure on v6 — do not pin to v5 for a greenfield deployment.
 
-interface ScreeningConfig {
-  bamboohr: {
-    jobId: string;
-    stageIds: {
-      newApplicant: string;
-      schedulePhoneScreen: string;
-      reviewed: string;
-    };
-  };
-  rules: {
-    hardRules: HardRule[];
-    softRules: string[];
-  };
+**Key v6 change relevant to this project:** Multi-region support via resource-level `region` argument (won't be used here, but good to know). No breaking changes to `aws_instance`, `aws_ecr_repository`, `aws_iam_role`, or `aws_ssm_parameter` resources for the patterns this project uses.
+
+**String-boolean deprecation:** v6 removed support for `"0"`/`"1"` as boolean values in resource attributes. Use `true`/`false` in HCL — this is already the correct practice.
+
+```hcl
+# terraform/providers.tf
+terraform {
+  required_version = ">= 1.7"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+  }
 }
 
-const raw = fs.readFileSync("/config/config.yaml", "utf8");
-const config = yaml.load(raw) as ScreeningConfig;
+provider "aws" {
+  region = var.aws_region
+}
 ```
 
-Validate the loaded object with Zod immediately after parsing to catch misconfigured YAML before the agent loop starts.
+**Terraform CLI version:** 1.7+ required for provider-defined functions (used by some AWS modules). Verify with `terraform version`.
+
+**Confidence: HIGH** — version confirmed from GitHub releases page (v6.25.0 released December 2025).
 
 ---
 
-## Docker Setup
+### 4. AWS Secrets Management — SSM Parameter Store (SecureString)
 
-**CONFIDENCE: HIGH** — patterns are stable and well-established.
+**Decision: AWS Systems Manager Parameter Store, SecureString type. NOT Secrets Manager. NOT a `.env` file.**
 
-### Dockerfile
+| Option | Cost | Rotation | Complexity | Verdict |
+|--------|------|----------|------------|---------|
+| SSM Parameter Store (SecureString) | Free (standard tier) | Manual | Low | **Use this** |
+| Secrets Manager | $0.40/secret/month | Automatic | Medium | Overkill for static API keys |
+| `.env` file on disk | Free | Manual | Very low | Security risk — file persists on instance |
+| Env vars in user_data | Free | Redeploy | None | Exposed in EC2 console/CloudTrail |
 
-```dockerfile
-FROM node:22-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-COPY tsconfig.json ./
-COPY src ./src
-RUN npx tsc --outDir dist
+**Why SSM Parameter Store wins:**
+- Standard-tier parameters are free. Three secrets (BambooHR API key, subdomain, OpenAI API key) cost $0.
+- SecureString values are encrypted at rest with KMS (the default AWS-managed key is free).
+- EC2 instance retrieves values at container startup via AWS CLI in the cron script — no stored plaintext.
+- Terraform provisions the parameters; values are populated manually once (or via Terraform with `sensitive = true`).
 
-FROM node:22-alpine AS runtime
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-# Config mounted at runtime via -v flag; not baked in
-CMD ["node", "dist/index.js"]
-```
+**Why not Secrets Manager:** This project has 3 static API keys that never auto-rotate. Paying $1.20/month for rotation capability that won't be used is unnecessary.
 
-### Docker run command (for crontab)
+**Why not a `.env` file:** A file on the instance survives reboots and is readable by anyone with shell access. It also requires SSH or SSM Session Manager to update — no better than Parameter Store, strictly worse for security.
+
+**Runtime pattern (cron script on EC2):**
 
 ```bash
+#!/bin/bash
+# /home/screener/run.sh — called by crontab
+set -e
+
+AWS_REGION="eu-west-1"
+ECR_REGISTRY="123456789.dkr.ecr.eu-west-1.amazonaws.com"
+IMAGE="${ECR_REGISTRY}/bamboohr-screener:latest"
+
+# Authenticate Docker to ECR (IAM instance profile handles AWS auth)
+aws ecr get-login-password --region "$AWS_REGION" | \
+  docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+# Pull latest image
+docker pull "$IMAGE"
+
+# Fetch secrets from Parameter Store
+BAMBOOHR_API_KEY=$(aws ssm get-parameter \
+  --name "/screener/bamboohr-api-key" \
+  --with-decryption \
+  --query "Parameter.Value" \
+  --output text)
+
+BAMBOOHR_SUBDOMAIN=$(aws ssm get-parameter \
+  --name "/screener/bamboohr-subdomain" \
+  --query "Parameter.Value" \
+  --output text)
+
+OPENAI_API_KEY=$(aws ssm get-parameter \
+  --name "/screener/openai-api-key" \
+  --with-decryption \
+  --query "Parameter.Value" \
+  --output text)
+
+# Run — secrets injected as env vars, not stored anywhere
 docker run --rm \
-  -e BAMBOOHR_API_KEY=... \
-  -e BAMBOOHR_COMPANY_DOMAIN=... \
-  -e OPENAI_API_KEY=... \
-  -v /path/to/config.yaml:/config/config.yaml:ro \
-  bamboohr-screener:latest
+  -e BAMBOOHR_API_KEY="$BAMBOOHR_API_KEY" \
+  -e BAMBOOHR_SUBDOMAIN="$BAMBOOHR_SUBDOMAIN" \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e LIVE_MODE=true \
+  -v /home/screener/config.yaml:/app/config.yaml:ro \
+  "$IMAGE"
 ```
 
-`--rm` ensures the container is deleted after exit (short-lived pattern). Config is mounted read-only.
+Secrets are fetched at each cron invocation and never written to disk. The IAM instance profile grants `ssm:GetParameter` and `ecr:GetAuthorizationToken` — no AWS credentials on the instance.
 
-### macOS crontab entry
+**Confidence: HIGH** — SSM Parameter Store is the standard low-cost secret management pattern for EC2 workloads; pricing confirmed from AWS docs.
+
+---
+
+### 5. EC2 Instance Sizing
+
+**Decision: t4g.micro (ARM64 / Graviton2), Amazon Linux 2023.**
+
+| Instance | vCPU | RAM | On-demand price (us-east-1) | Notes |
+|----------|------|-----|----------------------------|-------|
+| t4g.nano | 2 | 0.5 GiB | ~$3.07/month | Too tight for Docker daemon + Node.js container |
+| **t4g.micro** | **2** | **1 GiB** | **~$6.13/month** | **Recommended — sufficient headroom** |
+| t4g.small | 2 | 2 GiB | ~$12.26/month | Unnecessary; 1 GiB is plenty for a short-lived job |
+| t3.micro | 2 | 1 GiB | ~$8.35/month | x86 equivalent; 36% more expensive than t4g.micro |
+
+**Why t4g.micro:**
+- The screener container runs for ~30-60 seconds once daily, then exits. The instance sits idle the remaining 23.9 hours.
+- 1 GiB RAM comfortably accommodates: Docker daemon (~150MB), `node:22-alpine` container (~80MB base + app), Node.js heap for PDF processing.
+- t4g is 40% cheaper than t3 for equivalent specs. Graviton2 ARM64 handles Node.js workloads identically.
+- Burstable CPU credits: the instance accumulates CPU credits while idle and spends them during the brief daily run — ideal pattern for cron workloads.
+
+**AMI:** Amazon Linux 2023 ARM64 (`al2023-ami-*-arm64`). Docker is installable via `dnf install docker` in user_data. Amazon Linux 2023 ships with AWS CLI v2 pre-installed.
+
+**EBS:** 8GB gp3 root volume is the default and sufficient. Screener downloads PDFs into container memory, not to disk.
+
+**Confidence: HIGH** — pricing from public AWS EC2 pricing page (May 2026); sizing rationale from workload analysis.
+
+---
+
+### 6. Deploy Script Pattern — No Manual SSH
+
+**Decision: local deploy script using `aws ssm send-command` to trigger a re-pull and restart on the EC2 instance. No SSH, no bastion.**
+
+The three-step deploy flow:
 
 ```
-0 8 * * 1-5 /usr/local/bin/docker run --rm -e BAMBOOHR_API_KEY=... [rest of command] >> /var/log/screener.log 2>&1
+Step 1: docker buildx build + push to ECR  (local machine)
+Step 2: aws ssm send-command → EC2 runs pull + restart script
+Step 3: aws ssm get-command-invocation → verify success
 ```
 
-Use full Docker path (`/usr/local/bin/docker`) because cron runs with a minimal PATH on macOS. Redirect stdout/stderr to a log file.
+This requires:
+- EC2 instance role has `AmazonSSMManagedInstanceCore` policy.
+- SSM Agent installed on instance (included by default on Amazon Linux 2023).
+- Local machine has AWS CLI configured with permissions for `ssm:SendCommand`.
+
+**Local deploy script (`scripts/deploy.sh`):**
+
+```bash
+#!/bin/bash
+set -e
+
+ECR_REGISTRY="123456789.dkr.ecr.eu-west-1.amazonaws.com"
+IMAGE_NAME="bamboohr-screener"
+INSTANCE_ID="i-0abc123..."  # or read from Terraform output
+
+# Step 1: Build and push
+aws ecr get-login-password --region eu-west-1 | \
+  docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+docker buildx build --platform linux/arm64 \
+  -t "$ECR_REGISTRY/$IMAGE_NAME:latest" \
+  --push .
+
+# Step 2: Trigger update on EC2
+COMMAND_ID=$(aws ssm send-command \
+  --instance-ids "$INSTANCE_ID" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["/home/screener/update.sh"]' \
+  --query "Command.CommandId" \
+  --output text)
+
+# Step 3: Wait and verify
+aws ssm wait command-executed \
+  --command-id "$COMMAND_ID" \
+  --instance-id "$INSTANCE_ID"
+
+aws ssm get-command-invocation \
+  --command-id "$COMMAND_ID" \
+  --instance-id "$INSTANCE_ID" \
+  --query "Status" \
+  --output text
+```
+
+The `update.sh` on the EC2 instance simply pulls the new image. The cron scheduler picks up the new image on the next scheduled run — no container restart needed since the container is short-lived and already done.
+
+**Confidence: MEDIUM** — SSM send-command pattern is well-documented; specific `wait` command syntax should be verified against current AWS CLI docs.
+
+---
+
+### 7. Terraform Resource Map
+
+Minimum required resources for this workload:
+
+| Resource | Terraform Type | Notes |
+|----------|---------------|-------|
+| ECR repository | `aws_ecr_repository` | `image_tag_mutability = "MUTABLE"` (overwrite `:latest` on each push) |
+| ECR lifecycle policy | `aws_ecr_lifecycle_policy` | Keep last 3 images |
+| EC2 instance | `aws_instance` | t4g.micro, Amazon Linux 2023 ARM64 |
+| IAM role | `aws_iam_role` | EC2 assume-role principal |
+| IAM instance profile | `aws_iam_instance_profile` | Attaches role to EC2 |
+| IAM policy | `aws_iam_role_policy` or `aws_iam_policy` | Grants ECR pull + SSM get-parameter + SSM managed instance core |
+| SSM parameters | `aws_ssm_parameter` | Type = `SecureString` for API keys; `String` for subdomain |
+| Security group | `aws_security_group` | Egress only (HTTPS to ECR, BambooHR API, OpenAI API); no inbound needed |
+| Key pair | `aws_key_pair` | Optional — SSM Session Manager eliminates SSH need |
+| VPC/Subnet | Use default VPC | Acceptable for this workload; a custom VPC is overkill |
+
+**No load balancer, no RDS, no ECS.** This is a single EC2 instance running cron — keep it simple.
+
+**Terraform state:** Remote state in S3 + DynamoDB locking is the standard. For a single-developer project, local state is acceptable if the risk of state loss is acknowledged. S3 backend setup adds ~3 resources but protects against accidental state deletion.
+
+**Confidence: HIGH** — resource list derived from the workload requirements; all resource types are stable in AWS provider v6.
 
 ---
 
 ## Alternatives Considered
 
-| Recommended | Alternative | When to Use Alternative |
-|-------------|-------------|-------------------------|
-| `@openai/agents` | Plain `openai` SDK with manual function-call loop | If the Agents SDK proves too opaque for debugging, or if the task is simple enough that the agent loop overhead isn't worth it |
-| `pdf-parse` | `pdfjs-dist` (Mozilla PDF.js) | If `pdf-parse` fails on heavily formatted or encrypted PDFs; `pdfjs-dist` is more robust but heavier and requires more setup code |
-| `pdf-parse` | `pdf2pic` + OCR | If CVs are scanned images embedded in PDFs — pdf-parse extracts only digital text; OCR required for image-based PDFs |
-| `js-yaml` | `yaml` (npm package) | Both are fine; `yaml` (by eemeli) has slightly better spec compliance and TypeScript types; either works for this use case |
-| `zod` | Manual type assertions | Never use manual `as` casts for external API data — Zod validates at runtime and generates TypeScript types simultaneously |
-| Node 22 built-in fetch | `axios` | If complex interceptors, automatic retries, or multipart upload are needed; not needed here |
-| `tsx` (dev) | `ts-node` | `ts-node` requires careful ESM/CommonJS configuration in 2025; `tsx` is simpler and faster for scripts |
-| External cron + docker run | Node `node-cron` inside a long-running container | External cron is better for this: container stays stateless, no PID management, identical on macOS and Linux server |
+| Category | Recommended | Alternative | Why Not |
+|----------|-------------|-------------|---------|
+| Registry | AWS ECR | Docker Hub | No free private repos; token management on EC2; more expensive |
+| Registry | AWS ECR | GitHub Container Registry | Adds GitHub dependency; ECR keeps everything in AWS account |
+| Secrets | SSM Parameter Store | Secrets Manager | $0.40/secret/month for static API keys that don't rotate — unnecessary cost |
+| Secrets | SSM Parameter Store | `.env` file on disk | Persists plaintext on instance; harder to rotate; security anti-pattern |
+| Instance type | t4g.micro | t3.micro | 36% more expensive for identical specs; ARM64 fully supported by Node.js + Alpine |
+| Instance type | t4g.micro | Fargate/ECS | Significant additional complexity for a single daily cron job; overkill |
+| Deploy trigger | SSM send-command | GitHub Actions | Adds CI/CD platform dependency; SSM send-command works from any machine with AWS CLI |
+| Deploy trigger | SSM send-command | CodeDeploy | CodeDeploy adds an agent, deployment groups, appspec.yaml — too much ceremony for this use case |
+| Scheduling | EC2 crontab | EventBridge + Lambda | Lambda cold start + ECR pull latency; more moving parts; EC2 cron is simpler and free |
+| Scheduling | EC2 crontab | ECS Scheduled Tasks | ECS cluster adds cost; Fargate per-invocation billing adds up; EC2 cron is free |
+| Terraform state | Local | S3 + DynamoDB | S3 backend is best practice for teams; local state is acceptable for single-developer, acknowledged risk |
+| Provider version | `~> 6.0` | `~> 5.0` | v5 is in security-patch mode; start new infra on current major version |
 
 ---
 
-## What NOT to Use
+## Installation
 
-| Avoid | Why | Use Instead |
-|-------|-----|-------------|
-| `langchain` / `llamaindex` | Massive dependency tree, frequent breaking changes, abstracts away the Agents SDK primitives; overkill for a single-agent tool-calling loop | `@openai/agents` directly |
-| `pdf2json` | Unmaintained, unreliable text extraction order on multi-column layouts | `pdf-parse` |
-| `dotenv` for Docker | Env vars should come from `docker run -e` or a secrets manager, not a `.env` file baked in or mounted — security smell | `process.env` directly; validate at startup with Zod |
-| `node-schedule` or `node-cron` inside container | Makes the container long-lived; loses the stateless run-and-exit property; harder to deploy to a server | macOS crontab + `docker run --rm` |
-| CommonJS (`require()`) | TypeScript 5.x + Node 22 work best with ESM; mixing CJS/ESM in the same project causes hard-to-debug errors | ESM throughout; set `"type": "module"` in package.json |
+```bash
+# No new Node.js packages needed for multi-job support
+# The config schema change is pure TypeScript refactoring
 
----
+# Terraform setup (one-time)
+brew install terraform  # or use tfenv for version management
+terraform init          # in terraform/ directory
 
-## Version Compatibility
-
-| Package | Compatible With | Notes |
-|---------|-----------------|-------|
-| `@openai/agents` latest | `openai` ^4.x | `@openai/agents` declares `openai` as a peer dependency; do not install conflicting versions |
-| `pdf-parse` ^1.1.1 | Node 18, 20, 22 | Pure JS; no native addons; works in Alpine |
-| `js-yaml` ^4.1.0 | Node 14+ | v4 dropped v3's `safeLoad` (now just `load`); do not use v3 API examples from old tutorials |
-| `zod` ^3.x | TypeScript ^4.5+ | Zod 3 requires TS 4.5+; no issue with TS 5.x |
-| TypeScript ^5.5 | Node 22 | Use `"target": "ES2022"` or higher in tsconfig; enables native async/await without downleveling |
-
----
-
-## tsconfig.json Baseline
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "esModuleInterop": true,
-    "skipLibCheck": false
-  }
-}
+# AWS CLI setup (one-time)
+brew install awscli
+aws configure  # or use AWS SSO
 ```
-
-`"module": "NodeNext"` is required for ESM with Node 22. `"noUncheckedIndexedAccess": true` catches array index issues when iterating BambooHR API response arrays.
 
 ---
 
 ## Sources
 
-- Training knowledge of `@openai/agents` SDK (released March 2025) — MEDIUM confidence; version number requires npm verification
-- Training knowledge of BambooHR ATS API documentation — MEDIUM confidence; endpoint paths must be verified at https://documentation.bamboohr.com/reference
-- Training knowledge of `pdf-parse`, `js-yaml`, `zod` — HIGH confidence on API; version numbers require npm verification
-- Docker multi-stage build patterns for Node.js — HIGH confidence; stable pattern
-- macOS crontab + Docker invocation pattern — HIGH confidence; stable pattern
-
-**NOTE:** All external research tools (Bash, WebSearch, WebFetch) were unavailable during this research session. Every version number in this document should be treated as a starting point and validated against npm/official docs before writing package.json. Specifically verify: `@openai/agents` current version, whether BambooHR has a newer Hiring API that supersedes the ATS endpoints documented here, and whether `pdf-parse` still has no active-maintenance successors with better test compatibility.
+- AWS ECR pricing: https://aws.amazon.com/ecr/pricing/ — HIGH confidence
+- t4g.micro pricing (~$6.13/month, us-east-1): https://www.economize.cloud/resources/aws/pricing/ec2/t4g.micro/ — HIGH confidence
+- Terraform AWS provider v6.0 release: https://www.hashicorp.com/en/blog/terraform-aws-provider-6-0-now-generally-available — HIGH confidence
+- Terraform AWS provider v6.25.0 (latest as of Dec 2025): https://github.com/hashicorp/terraform-provider-aws/releases/tag/v6.25.0 — HIGH confidence
+- AWS SSM Parameter Store pricing (standard = free): https://aws.amazon.com/blogs/security/how-to-choose-the-right-aws-service-for-managing-secrets-and-configurations/ — HIGH confidence
+- SSM send-command deploy pattern: https://medium.com/@usvisen2000/simplifying-docker-deployments-on-aws-ec2-instances-a-github-actions-and-aws-ssm-approach-45014bf3869a — MEDIUM confidence
+- Docker multi-platform ARM64 builds: https://docs.docker.com/build/building/multi-platform/ — HIGH confidence
+- node:22-alpine ARM64 support: https://github.com/nodejs/docker-node — HIGH confidence
 
 ---
-*Stack research for: BambooHR candidate screening agent (TypeScript + OpenAI Agents SDK)*
-*Researched: 2026-05-01*
+
+*Stack research addendum for: BambooHR candidate screener v1.1 (Multi-Job & AWS Deployment)*
+*Researched: 2026-05-04*

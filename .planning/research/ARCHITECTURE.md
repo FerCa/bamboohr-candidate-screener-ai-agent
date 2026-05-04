@@ -1,593 +1,759 @@
-# Architecture Research
+# Architecture Patterns — v1.1: Multi-Job & AWS Deployment
 
 **Domain:** Automated HR candidate screening agent (TypeScript, OpenAI Agents SDK, BambooHR)
-**Researched:** 2026-05-01
-**Confidence:** MEDIUM (no external tool access; based on OpenAI Agents SDK TypeScript docs knowledge through August 2025 training, BambooHR API v1 patterns, and general agentic system patterns)
+**Researched:** 2026-05-04
+**Confidence:** HIGH for config schema changes and pipeline wiring (code is in hand); MEDIUM for Terraform resource list and secrets injection pattern (verified against Terraform Registry docs and AWS documentation via web search)
 
 ---
 
-## Standard Architecture
+## Context: What Exists vs. What Changes
 
-### System Overview
+This document supersedes the v1.0 architecture research. The v1.0 system is fully built and
+human-UAT verified. The new milestone adds two features without rewriting the core:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Entry Point (src/index.ts)                                          │
-│  Docker ENTRYPOINT — loads config, builds agent, runs, exits        │
-└───────────────────────┬─────────────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Bootstrap Layer                                                      │
-│  ┌─────────────────────┐   ┌──────────────────────────────────────┐  │
-│  │  Config Loader       │   │  BambooHR Client (singleton)         │  │
-│  │  YAML → typed obj    │   │  Wraps fetch, injects auth header    │  │
-│  └────────┬────────────┘   └──────────────────┬───────────────────┘  │
-│           │                                    │                      │
-└───────────┼────────────────────────────────────┼──────────────────────┘
-            │                                    │
-            ▼                                    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Agent Layer (OpenAI Agents SDK)                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  ScreeningAgent                                                  │  │
-│  │  • system prompt = rules context (hard rules + soft guidelines) │  │
-│  │  • tools injected at construction time                          │  │
-│  │  • run() called once per candidate                              │  │
-│  └───────────────────────────┬────────────────────────────────────┘  │
-│                               │ tool calls                            │
-│  ┌────────────┐ ┌───────────┐ │ ┌─────────────┐  ┌────────────────┐  │
-│  │ list_cands │ │ get_cand  │ │ │ get_cv_text │  │ move_stage /   │  │
-│  │ Tool       │ │ Tool      │ │ │ Tool        │  │ add_comment    │  │
-│  └────────────┘ └───────────┘ │ └─────────────┘  └────────────────┘  │
-└───────────────────────────────┼─────────────────────────────────────┘
-                                │ HTTP
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  External Services                                                    │
-│  ┌──────────────────────────────────┐  ┌─────────────────────────┐  │
-│  │  BambooHR REST API               │  │  OpenAI API (GPT-4o)    │  │
-│  │  /ats/v1/applications            │  │  via Agents SDK runner  │  │
-│  │  /v1/applicant-tracking/         │  │                         │  │
-│  └──────────────────────────────────┘  └─────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-```
+| Component | v1.0 State | v1.1 Change |
+|-----------|-----------|------------|
+| `src/config/schema.ts` | Single `job` object | Needs to support `jobs` array |
+| `src/screener/screening-pipeline.ts` | Handles one job | Needs outer loop over jobs |
+| `src/index.ts` | Constructs one `CandidateProcessor` for the config | Needs to construct one per job, or pass job-scoped config |
+| `src/pipeline/candidate-processor.ts` | Receives `Config` — reads `config.job.*` directly | Unchanged if job is passed in as a scoped sub-config |
+| `Dockerfile` | Reads `--env-file` at `docker run` | Unchanged — secrets injection moves to the cron wrapper script on EC2 |
+| `crontab` (local) | `docker run --rm --env-file /etc/screener.env` | Replaced on EC2 by a wrapper script that fetches from Secrets Manager |
+| Terraform | Does not exist | New: ECR repo, EC2 instance, IAM role/instance profile, security group, cron wiring |
+| Deploy scripts | Does not exist | New: `build.sh`, `push.sh`, `deploy.sh` (or a single `release.sh`) |
 
 ---
 
-### Component Responsibilities
+## Part 1: Multi-Job Config Schema Changes
 
-| Component | Responsibility | Implementation |
-|-----------|----------------|----------------|
-| `index.ts` | Orchestrates startup: load config, build agent, fetch candidate list, run agent per candidate, exit with code 0/1 | Plain async main() |
-| `config/loader.ts` | Parse YAML file → validate → return typed `AppConfig` object | `js-yaml` + `zod` schema |
-| `config/schema.ts` | Zod schema for `AppConfig` — hard rules, stage IDs, job ID | Zod |
-| `bamboohr/client.ts` | Thin HTTP client: auth header injection, base URL, retry-once on 429 | Native `fetch` with typed response shapes |
-| `bamboohr/types.ts` | TypeScript types for BambooHR API response shapes | Plain types/interfaces |
-| `pdf/extractor.ts` | Download PDF buffer from URL, parse to plain text | `pdf-parse` npm package |
-| `agent/agent.ts` | Constructs the `Agent` with system prompt, tool list, model | `@openai/agents` `Agent` class |
-| `agent/tools.ts` | Defines all tool functions with Zod input schemas | `@openai/agents` `tool()` function |
-| `agent/prompt.ts` | Builds the system prompt string from `AppConfig` rules | Template string function |
-| `agent/runner.ts` | Calls `run(agent, input)` per candidate, captures result, handles errors | `@openai/agents` `run()` |
-| `logger.ts` | Structured JSON stdout logging wrapper | `console.log(JSON.stringify(...))` |
-| `idempotency.ts` | Checks/writes a local run-state file to skip already-processed candidates | JSON file at `/data/processed.json` |
-
----
-
-## Recommended Project Structure
+### Current Schema Shape
 
 ```
-src/
-├── index.ts                 # Entry point — main() orchestrator
-├── config/
-│   ├── loader.ts            # YAML file → AppConfig (validates on load)
-│   └── schema.ts            # Zod schema for full config shape
-├── bamboohr/
-│   ├── client.ts            # HTTP client (auth, base URL, typed methods)
-│   └── types.ts             # API response types (Candidate, Application, etc.)
-├── pdf/
-│   └── extractor.ts         # Download PDF URL → extract plain text
-├── agent/
-│   ├── agent.ts             # Agent construction (system prompt + tools)
-│   ├── tools.ts             # All tool definitions (list, get, move, comment, cv)
-│   ├── prompt.ts            # System prompt builder from AppConfig
-│   └── runner.ts            # run() wrapper — per-candidate, error-isolated
-├── idempotency.ts           # Processed-candidate tracking (file-based)
-└── logger.ts                # Structured JSON logger
-
-config/
-└── rules.example.yaml       # Documented example config (checked into repo)
-
-data/                        # Mounted Docker volume
-└── processed.json           # Written at runtime — gitignored
+config.yaml
+  job:
+    openingId: "123"
+    stages: { intake, pass, fail }
+  hardRules: { ... }
+  fieldMap: { ... }
+  softRules: { ... }
 ```
 
-### Structure Rationale
+`configSchema` in `src/config/schema.ts` is a single `z.object` where `job` is a single object,
+and `hardRules`, `fieldMap`, `softRules` are siblings of `job` at the top level.
 
-- **`config/`:** Separates schema definition from loading logic. Zod schema doubles as documentation and catches misconfigured YAML at startup before any API calls.
-- **`bamboohr/`:** Isolated behind a typed client so tool implementations never construct raw URLs or handle auth. Easy to mock in tests.
-- **`pdf/`:** Isolated because PDF extraction is the most likely dependency to change (library swap, adding OCR fallback). Bounded module with a single function signature.
-- **`agent/`:** Split into `agent.ts` (construction), `tools.ts` (definitions), `prompt.ts` (text), and `runner.ts` (execution) so each concern can be tested and modified independently.
-- **`data/`:** Runtime volume mount. Separates ephemeral run state from code — survives container restart, excluded from image.
+### Recommended Schema Change
 
----
+Wrap the current single-job block into a `jobs` array. Each element is one job with its own
+`openingId`, `stages`, `hardRules`, `fieldMap`, and `softRules`. This is a breaking change to
+the YAML format.
 
-## Architectural Patterns
-
-### Pattern 1: Single Agent, Per-Candidate Invocation
-
-**What:** One `Agent` instance is constructed once at startup (shared across all candidates). `run(agent, candidateContext)` is called sequentially for each candidate in the "New" stage. Each run is isolated.
-
-**When to use:** This system has a small, bounded candidate list per daily run (10–50 candidates typically). Sequential processing avoids rate limits and keeps reasoning chains short and focused.
-
-**Trade-offs:** Slower than parallel processing, but BambooHR API has low rate limits and sequential execution makes logs readable and failures attributable to specific candidates.
-
-**Example:**
 ```typescript
-// agent/runner.ts
-import { run } from "@openai/agents";
-import { screeningAgent } from "./agent";
+// New per-job sub-schema (extracts everything currently at root)
+const jobConfigSchema = z.object({
+  openingId: z.string().min(1).refine(
+    (v) => !v.startsWith('REPLACE_WITH'),
+    { message: 'openingId must be set to a real BambooHR job opening ID' }
+  ),
+  stages: z.object({
+    intake: z.string().min(1),
+    pass: z.string().min(1),
+    fail: z.string().min(1),
+  }),
+  hardRules: hardRulesSchema,   // same schema as current `hardRules`
+  fieldMap: z.record(z.string(), z.string()),
+  softRules: softRulesSchema,   // same schema as current `softRules`
+});
 
-export async function runForCandidate(
-  candidateId: string,
-  context: CandidateContext
-): Promise<ScreeningResult> {
-  const input = buildCandidateInput(context); // structured text summary
-  const result = await run(screeningAgent, input);
-  return parseAgentResult(result.finalOutput);
-}
+// New top-level config
+export const configSchema = z.object({
+  jobs: z.array(jobConfigSchema).min(1, {
+    message: 'config must define at least one job',
+  }),
+});
+
+export type JobConfig = z.infer<typeof jobConfigSchema>;
+export type Config = z.infer<typeof configSchema>;
+```
+
+**Why this shape:** Each job is fully self-contained. There is no shared `fieldMap` or shared
+`hardRules` across jobs — jobs are for different openings, each with different criteria. Sharing
+rules across jobs would create implicit coupling that breaks the moment two jobs need different
+salary ceilings or different required fields.
+
+**Backward compatibility:** This is a breaking YAML change. The existing `config.yaml` must be
+migrated. Migration is straightforward — wrap the current top-level keys inside a `jobs:` array
+element. The phase plan should include a migration note and an updated `config.example.yaml`.
+
+### Example Multi-Job config.yaml
+
+```yaml
+jobs:
+  - openingId: "456"
+    stages:
+      intake: "New"
+      pass: "Schedule Phone Screen"
+      fail: "Reviewed"
+    hardRules:
+      maxSalary:
+        value: 90000
+        label: "Salary ceiling €90k"
+      requiredFields:
+        fields: ["resume"]
+        label: "CV required"
+    fieldMap:
+      salary: "customField_12345"
+    softRules:
+      required:
+        - label: "Node.js experience"
+          description: "Candidate demonstrates Node.js backend experience"
+
+  - openingId: "789"
+    stages:
+      intake: "Applied"
+      pass: "Phone Screen"
+      fail: "Not Qualified"
+    hardRules:
+      requiredBoolean:
+        - field: "workAuthorization"
+          expectedValue: true
+          label: "EU work authorization required"
+    fieldMap:
+      workAuthorization: "customField_99999"
+    softRules:
+      required:
+        - label: "React experience"
+          description: "Candidate has production React experience"
 ```
 
 ---
 
-### Pattern 2: Rules as System Prompt Context, Not Separate Service
+## Part 2: ScreeningPipeline Changes for Multi-Job
 
-**What:** Hard rules (from YAML config) and soft guidelines are serialized into the agent's system prompt at construction time. The rules engine is not a separate module the agent calls — the rules live in the agent's context window.
+### What Changes
 
-**When to use:** When rules are small enough to fit in the context window (they will be — a few dozen rules), this is simpler than a separate tool call. Hard rules are pre-checked *before* the agent runs (in `index.ts`) to short-circuit obvious rejects cheaply.
+`ScreeningPipeline` currently receives a single `Config` and processes one job. With multi-job
+support, `ScreeningPipeline` needs to iterate over `config.jobs` and run the full pipeline for
+each job.
 
-**Trade-offs:** Rules live in the prompt, so changes require rebuilding the agent (fine — agent is rebuilt on each container start). If rules grow to hundreds of entries, consider moving to a tool-based lookup.
+There are two valid designs:
 
-**Example:**
+**Option A: Outer loop in ScreeningPipeline.run() (RECOMMENDED)**
+
+`ScreeningPipeline` receives the full `Config` (now containing `config.jobs: JobConfig[]`). Its
+`run()` method loops over `config.jobs` and runs the job-scoped pipeline for each. The
+`CandidateProcessor` receives a `JobConfig` instead of `Config` so it only sees its own job's
+rules and stages.
+
 ```typescript
-// agent/prompt.ts
-export function buildSystemPrompt(config: AppConfig): string {
-  return `
-You are a recruitment screening agent. Evaluate candidates against these criteria:
+// src/screener/screening-pipeline.ts — new run() outline
 
-HARD RULES (already pre-checked — provided for your reasoning context):
-${config.hardRules.map(r => `- ${r.description}`).join("\n")}
-
-SOFT EVALUATION CRITERIA (use your judgment):
-${config.softRules.map(r => `- ${r.description}`).join("\n")}
-
-Your job: call tools to get CV text and application answers, then decide:
-- PASS → call move_to_phone_screen with a comment listing matched criteria
-- REJECT → call move_to_reviewed with a comment listing unmet criteria
-
-Be specific in your comments. Never say "does not meet criteria" without naming the criterion.
-  `.trim();
-}
-```
-
----
-
-### Pattern 3: Hard Rules Pre-Filter Before Agent
-
-**What:** Before invoking the agent, `index.ts` evaluates all hard rules against the structured candidate data (no LLM needed). Candidates that fail hard rules are moved and commented without burning an agent run.
-
-**When to use:** Always. Hard rules are deterministic and cheap. LLM calls cost money and time. Reserve the agent for candidates who cleared the objective criteria.
-
-**Trade-offs:** Slightly more code paths to maintain (hard rule evaluator + agent for soft rules). Worth it — eliminates most LLM calls in practice.
-
-**Example:**
-```typescript
-// index.ts (partial)
-for (const candidate of newCandidates) {
-  const hardResult = evaluateHardRules(candidate, config.hardRules);
-  if (!hardResult.pass) {
-    await bamboohr.moveStage(candidate.id, config.stages.reviewed);
-    await bamboohr.addComment(candidate.id, buildRejectionComment(hardResult.failedRules));
-    logger.info({ event: "hard_reject", candidateId: candidate.id, reasons: hardResult.failedRules });
-    continue;
+async run(): Promise<void> {
+  for (const jobConfig of this.config.jobs) {
+    console.error(`[main] Processing job: ${jobConfig.openingId}`);
+    await this.runJob(jobConfig);
   }
-  // Only reaches agent if hard rules pass
-  await runnerForCandidate(candidate.id, buildContext(candidate));
+}
+
+private async runJob(jobConfig: JobConfig): Promise<void> {
+  // validateStages, fetchCandidates, per-candidate loop
+  // — identical to current run() but scoped to jobConfig
 }
 ```
 
----
+**Option B: Run ScreeningPipeline once per job (caller loops)**
 
-### Pattern 4: Tool Definitions Co-Located with BambooHR Client
+`index.ts` loops over `config.jobs` and creates one `ScreeningPipeline` per job. This works but
+requires constructing a new `CandidateProcessor` per job in `index.ts`, making the wiring more
+complex with no benefit.
 
-**What:** Each tool in `agent/tools.ts` closes over the BambooHR client and PDF extractor. Tools are thin wrappers: validate input, call the service, return a string result for the agent.
+**Why Option A is recommended:** The existing `ScreeningPipeline` constructor already owns the
+per-job loop. Moving the loop outward keeps `index.ts` thin and prevents it from needing to know
+about job iteration. The `CandidateProcessor` stays unchanged if it receives `JobConfig` (the
+per-job sub-config) instead of the full `Config`.
 
-**When to use:** Standard pattern for OpenAI Agents SDK tool definition. Tools return strings (or JSON-stringified objects) that the agent reads.
+### CandidateProcessor Type Change
 
-**Trade-offs:** Tools are coupled to the BambooHR client instance. This is fine for a single-process application. Use dependency injection (pass client as a parameter to a tool factory) to enable testing.
+`CandidateProcessor` currently receives `Config` (the top-level type). Under the new schema,
+`Config` no longer has `job`, `hardRules`, `fieldMap`, `softRules` at the top level — those
+move into each `JobConfig`. The cleanest change is:
 
-**Example:**
+- Replace `Config` with `JobConfig` in `CandidateProcessor`'s constructor and all internal
+  references.
+- No logic changes — only the type changes, since the field paths remain the same within the
+  per-job object.
+
 ```typescript
-// agent/tools.ts
-import { tool } from "@openai/agents";
-import { z } from "zod";
-import type { BambooHRClient } from "../bamboohr/client";
-import type { PDFExtractor } from "../pdf/extractor";
-
-export function buildTools(bamboohr: BambooHRClient, pdf: PDFExtractor) {
-  const getCVText = tool({
-    name: "get_cv_text",
-    description: "Download and extract text from a candidate's CV PDF.",
-    parameters: z.object({ candidateId: z.string() }),
-    execute: async ({ candidateId }) => {
-      const url = await bamboohr.getCVAttachmentUrl(candidateId);
-      if (!url) return "No CV attached.";
-      const text = await pdf.extractFromUrl(url);
-      return text.slice(0, 8000); // guard against oversized CVs
-    },
-  });
-
-  const moveToPhoneScreen = tool({
-    name: "move_to_phone_screen",
-    description: "Move candidate to 'Schedule Phone Screen' stage with a comment.",
-    parameters: z.object({
-      candidateId: z.string(),
-      comment: z.string().describe("Specific criteria matched, listed clearly."),
-    }),
-    execute: async ({ candidateId, comment }) => {
-      await bamboohr.moveStage(candidateId, config.stages.phoneScreen);
-      await bamboohr.addComment(candidateId, comment);
-      return "moved";
-    },
-  });
-
-  return [getCVText, moveToPhoneScreen /*, ...others */];
-}
+// Before: private readonly config: Config
+// After:  private readonly config: JobConfig
 ```
 
----
+The same substitution applies to `ScreeningPipeline`'s internal helpers that currently read
+`this.config.job.stages.intake`. Under the new schema, `this.config.stages.intake` (since `job`
+wrapper is gone from `JobConfig` — the opening ID and stages are at the `JobConfig` root).
 
-## Data Flow
+**Note:** The current `configSchema` has a `job` wrapper object inside the single-job config:
+`config.job.openingId`, `config.job.stages`. In the new `JobConfig`, it makes sense to flatten
+this: `jobConfig.openingId`, `jobConfig.stages` — removing the redundant `job` nesting since
+the `JobConfig` IS the job.
 
-### Full Per-Candidate Processing Flow
+### Updated Data Flow (Multi-Job)
 
 ```
 Container starts
     │
     ▼
-Load YAML config → validate with Zod → AppConfig
+loadConfig() → Config { jobs: JobConfig[] }
     │
     ▼
-Build BambooHRClient (injects API key + subdomain from env)
-Build PDFExtractor
-Build tools(bamboohr, pdf) → tool array
-Build systemPrompt(config) → string
-Build Agent(model, systemPrompt, tools)
+ScreeningPipeline.run()
+    │
+    ├── for each jobConfig in config.jobs:
+    │       │
+    │       ├── validateStages(jobConfig) → stageMap
+    │       │
+    │       ├── fetchCandidates(jobConfig.openingId, intakeStageId)
+    │       │
+    │       └── for each application:
+    │               CandidateProcessor(jobConfig).process(application, stageMap)
+    │                 → hard rules → CV → soft eval → write → outcome
     │
     ▼
-bamboohr.listCandidates(jobId, stage="New") → Candidate[]
+Per-job summaries logged to stderr
+Full run summary JSON to stdout
     │
     ▼
-For each Candidate:
-    │
-    ├─→ [Hard rule pre-filter]
-    │       evaluateHardRules(candidate, config.hardRules)
-    │       FAIL → moveStage(reviewed) + addComment → log → next candidate
-    │       PASS → continue
-    │
-    ├─→ [Idempotency check]
-    │       isProcessed(candidate.id) → skip if true
-    │
-    ├─→ [Agent run]
-    │       run(agent, candidateSummary)
-    │       Agent calls tools in a loop:
-    │         1. get_cv_text(candidateId) → PDF downloaded, text extracted
-    │         2. Agent reasons over CV + soft rules
-    │         3. move_to_phone_screen(id, comment) OR move_to_reviewed(id, comment)
-    │         4. Agent returns final output
-    │
-    ├─→ markProcessed(candidate.id) → write to /data/processed.json
-    │
-    └─→ log result (structured JSON to stdout)
-    │
-    ▼
-All candidates processed
-    │
-    ▼
-Log run summary (total, passed, rejected, errors)
-    │
-    ▼
-Process exits (code 0 if no unhandled errors, code 1 if fatal)
-```
-
-### Tool Call Sequence (Agent Internal Loop)
-
-```
-Agent receives: "Evaluate candidate {id}: {name}, {applied_role}, {salary_ask}"
-    │
-    ▼
-Agent calls: get_cv_text(candidateId)
-    │   BambooHRClient.getCVAttachmentUrl(id) → URL
-    │   fetch(URL) → PDF buffer
-    │   pdf-parse(buffer) → plain text
-    │   return text (truncated to 8000 chars)
-    │
-    ▼
-Agent reads CV text, applies soft rules in reasoning
-    │
-    ▼
-Agent calls: move_to_phone_screen(id, "Matched: 3+ years Node.js, salary within range, clear communication in cover letter")
-    OR
-Agent calls: move_to_reviewed(id, "Not matched: salary ask $180k exceeds ceiling $140k; no relevant backend experience")
-    │
-    ▼
-Tool executes: bamboohr.moveStage() + bamboohr.addComment()
-    │
-    ▼
-Agent returns final output (text confirmation)
+Process exits
 ```
 
 ---
 
-## Answers to Key Architectural Questions
+## Part 3: Secrets Injection on EC2
 
-### 1. Agent Structure — Tools and Loop
+### The Problem
 
-The agent is constructed with 5 tools:
+The current local setup uses `--env-file /etc/screener.env` passed to `docker run`. On EC2,
+credentials must come from AWS Secrets Manager (never stored in a file on disk long-term, never
+in the image, never in Terraform state).
 
-| Tool Name | Purpose | Returns |
-|-----------|---------|---------|
-| `get_cv_text` | Download + extract CV PDF text | String (plain text, truncated) |
-| `get_application_answers` | Fetch structured application form answers | JSON string |
-| `move_to_phone_screen` | Move stage + add pass comment | `"moved"` |
-| `move_to_reviewed` | Move stage + add reject comment | `"moved"` |
-| `log_no_cv` | Record that no CV was attached (agent still decides) | `"logged"` |
+### Two Candidate Approaches
 
-The agent loop is intentionally short: get CV text, reason, take one action (move). No multi-step loops needed. The agent should complete in 2–3 tool calls maximum. Set `maxTurns: 5` as a safety cap to prevent runaway loops.
+**Approach A: Startup wrapper script reads Secrets Manager at cron time (RECOMMENDED)**
 
-### 2. Rules Engine Location
+A shell script runs as the crontab entry instead of `docker run` directly. It calls
+`aws secretsmanager get-secret-value`, extracts credentials into local variables, and passes
+them as `-e` flags to `docker run`. The variables live in process memory only for the duration
+of the script — no file is written to disk.
 
-Rules engine is **not a separate service**. It is split into two tiers:
+```bash
+#!/usr/bin/env bash
+# /opt/screener/run.sh — cron entry point on EC2
 
-- **Hard rules** live in `src/hardRules.ts` — a pure function `evaluateHardRules(candidate, rules[])` that runs before the agent, requires no LLM, costs nothing.
-- **Soft rules** live in the agent's system prompt as text instructions. No separate function needed — the LLM is the evaluator.
+set -euo pipefail
 
-This avoids over-engineering: a "rules engine service" is unnecessary for this scale.
+REGION="eu-west-1"
+SECRET_ID="bamboohr-screener/prod"
 
-### 3. PDF Handling
+# Fetch secret JSON: { "BAMBOOHR_API_KEY": "...", "BAMBOOHR_SUBDOMAIN": "...", "OPENAI_API_KEY": "..." }
+SECRET=$(aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$SECRET_ID" \
+  --query SecretString \
+  --output text)
 
-PDF download and parsing is synchronous within the tool's `execute` function (awaited). Key decisions:
+BAMBOOHR_API_KEY=$(echo "$SECRET" | jq -r '.BAMBOOHR_API_KEY')
+BAMBOOHR_SUBDOMAIN=$(echo "$SECRET" | jq -r '.BAMBOOHR_SUBDOMAIN')
+OPENAI_API_KEY=$(echo "$SECRET" | jq -r '.OPENAI_API_KEY')
 
-- **Truncate at 8000 tokens** (approximately 32,000 characters) before sending to the LLM. Most CVs are 1–3 pages; truncation protects against edge cases.
-- **No caching** needed — each container run processes candidates once. PDFs are not stored.
-- **Rate limit protection**: BambooHR API allows ~100 requests/minute. With 1 PDF per candidate and sequential processing, this is never a problem.
-- **Error handling**: If PDF download fails (404, timeout), the tool returns `"No CV available"`. The agent can still decide based on application answers.
+# Authenticate Docker to ECR
+aws ecr get-login-password --region "$REGION" \
+  | docker login --username AWS --password-stdin \
+    "${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
-```typescript
-// pdf/extractor.ts
-export async function extractFromUrl(url: string): Promise<string> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`PDF fetch failed: ${response.status}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const result = await pdfParse(buffer);
-  return result.text;
+docker run --rm \
+  -e BAMBOOHR_API_KEY="$BAMBOOHR_API_KEY" \
+  -e BAMBOOHR_SUBDOMAIN="$BAMBOOHR_SUBDOMAIN" \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e LIVE_MODE="true" \
+  -v /opt/screener/config.yaml:/app/config.yaml:ro \
+  "${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/bamboohr-screener:latest"
+```
+
+The EC2 instance's IAM instance profile grants `secretsmanager:GetSecretValue` on the specific
+secret ARN and `ecr:GetAuthorizationToken` + ECR pull permissions. No AWS credentials are stored
+anywhere on disk.
+
+**Approach B: Write env file to tmpfs, delete after docker run**
+
+Write a temporary env file to `/run/screener.env` (tmpfs, RAM-only on Linux), pass it as
+`--env-file`, then `rm` it. Marginally more complex than Approach A with no benefit for this
+use case.
+
+**Why Approach A is recommended:** Simpler (no file to manage), credentials only exist as shell
+variables in the script's process, and the pattern is idiomatic for EC2 cron + Docker. The EC2
+instance profile provides the AWS credentials transparently via the metadata service — no
+credential file or `AWS_ACCESS_KEY_ID` env var needed.
+
+**Why not SSM Parameter Store:** SSM Parameter Store Standard is free but limited to 4KB per
+parameter. Storing three secrets individually is possible but requires three separate API calls.
+Secrets Manager stores all three as one JSON document ($0.40/month total) and supports rotation.
+For production credentials (BambooHR API key, OpenAI API key), Secrets Manager is the correct
+choice. The $0.40/month cost is negligible.
+
+### Secret Structure in Secrets Manager
+
+One secret, JSON value:
+```json
+{
+  "BAMBOOHR_API_KEY": "...",
+  "BAMBOOHR_SUBDOMAIN": "...",
+  "OPENAI_API_KEY": "..."
 }
 ```
 
-### 4. Config Loading Architecture
+Secret ID: `bamboohr-screener/prod` (or parameterized via Terraform variable).
 
-```
-/config/rules.yaml (Docker volume mount)
-    │
-    ▼
-js-yaml.load() → unknown
-    │
-    ▼
-AppConfigSchema.parse() (Zod) → AppConfig (typed, validated)
-    │  Throws ZodError with field-level messages if invalid
-    │
-    ▼
-AppConfig passed into: BambooHRClient constructor, prompt builder,
-                       hard rules evaluator, tool factory
-```
+---
 
-The config is loaded once at startup and passed explicitly — no global config singleton. This makes dependencies visible and simplifies testing.
+## Part 4: Minimum Terraform Resources for EC2 Cron
 
-**AppConfig shape:**
-```typescript
-interface AppConfig {
-  bamboohr: { jobId: string; stages: { new: string; phoneScreen: string; reviewed: string } };
-  hardRules: Array<{ field: string; operator: "lte" | "gte" | "eq" | "present"; value?: unknown; description: string }>;
-  softRules: Array<{ description: string }>;
+### Resource Inventory
+
+These are the minimum Terraform resources needed. No VPC creation is required if the default
+VPC is used (acceptable for this workload — it processes no inbound traffic, has no public
+ports, and makes only outbound API calls).
+
+| Resource | Terraform Type | Purpose |
+|----------|---------------|---------|
+| ECR repository | `aws_ecr_repository` | Stores Docker images |
+| ECR lifecycle policy | `aws_ecr_lifecycle_policy` | Keep last N images, auto-delete old ones |
+| IAM role | `aws_iam_role` | EC2 instance identity |
+| IAM role policy | `aws_iam_role_policy` | Permissions: ECR pull + Secrets Manager read |
+| IAM instance profile | `aws_iam_instance_profile` | Attaches role to EC2 instance |
+| Security group | `aws_security_group` | Egress-only (outbound HTTPS to AWS + BambooHR + OpenAI) |
+| EC2 instance | `aws_instance` | The cron host |
+| Secrets Manager secret | `aws_secretsmanager_secret` + `aws_secretsmanager_secret_version` | Stores credentials |
+
+**Optionally useful but not minimum:**
+- CloudWatch log group — for capturing `docker run` stdout to CloudWatch (add `--log-driver awslogs` to docker run)
+- `aws_eip` — stable IP if BambooHR has IP allowlist requirements (check with client)
+
+### Key Resource Configurations
+
+**IAM Role (trust policy: EC2 can assume)**
+```hcl
+resource "aws_iam_role" "screener" {
+  name = "bamboohr-screener"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
 }
 ```
 
-### 5. Error Handling and Partial Failure
+**IAM Role Policy (least-privilege: ECR pull + Secrets Manager read for specific secret)**
+```hcl
+resource "aws_iam_role_policy" "screener" {
+  name = "bamboohr-screener-policy"
+  role = aws_iam_role.screener.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["ecr:GetAuthorizationToken"]
+        Resource = "*"  # GetAuthorizationToken is always Resource: *
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchCheckLayerAvailability"
+        ]
+        Resource = aws_ecr_repository.screener.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = aws_secretsmanager_secret.screener.arn
+      }
+    ]
+  })
+}
+```
 
-**Per-candidate isolation:** Each candidate is processed in a `try/catch`. One candidate failing does not stop processing of others.
+**IAM Instance Profile**
+```hcl
+resource "aws_iam_instance_profile" "screener" {
+  name = "bamboohr-screener"
+  role = aws_iam_role.screener.name
+}
+```
 
-```typescript
-for (const candidate of candidates) {
-  try {
-    await processCandidate(candidate, agent, config);
-  } catch (err) {
-    logger.error({ event: "candidate_error", candidateId: candidate.id, error: String(err) });
-    errorCount++;
+**Security Group (egress-only)**
+```hcl
+resource "aws_security_group" "screener" {
+  name        = "bamboohr-screener"
+  description = "Outbound-only: screener makes no inbound connections"
+  vpc_id      = data.aws_vpc.default.id
+
+  egress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS to AWS APIs, BambooHR, OpenAI"
+  }
+}
+```
+
+Note: Omit SSH ingress from the security group — use SSM Session Manager for access instead.
+No key pair needed. This eliminates an entire attack surface.
+
+**EC2 Instance with user_data**
+
+The `user_data` script runs once at first boot and:
+1. Installs Docker, AWS CLI v2, and jq
+2. Writes the run script to `/opt/screener/run.sh`
+3. Writes `config.yaml` to `/opt/screener/config.yaml` (or copies from S3)
+4. Installs the crontab
+
+```hcl
+resource "aws_instance" "screener" {
+  ami                    = data.aws_ami.amazon_linux_2023.id
+  instance_type          = "t3.micro"
+  iam_instance_profile   = aws_iam_instance_profile.screener.name
+  vpc_security_group_ids = [aws_security_group.screener.id]
+
+  user_data = templatefile("${path.module}/user_data.sh.tpl", {
+    aws_account_id = data.aws_caller_identity.current.account_id
+    aws_region     = var.aws_region
+    ecr_image      = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/bamboohr-screener:latest"
+    secret_id      = aws_secretsmanager_secret.screener.name
+    cron_schedule  = var.cron_schedule  # e.g. "0 7 * * 1-5"
+  })
+
+  root_block_device {
+    volume_size = 20
+    volume_type = "gp3"
+  }
+
+  tags = { Name = "bamboohr-screener" }
+}
+```
+
+**user_data.sh.tpl (template file)**
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Install dependencies
+dnf install -y docker jq
+systemctl enable --now docker
+
+# Install AWS CLI v2 (Amazon Linux 2023 includes it; explicit for clarity)
+# aws cli is pre-installed on AL2023 AMI
+
+# Write the run script
+mkdir -p /opt/screener
+cat > /opt/screener/run.sh << 'RUNSCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+REGION="${aws_region}"
+SECRET_ID="${secret_id}"
+ECR_IMAGE="${ecr_image}"
+AWS_ACCOUNT_ID="${aws_account_id}"
+
+SECRET=$(aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$SECRET_ID" \
+  --query SecretString \
+  --output text)
+
+BAMBOOHR_API_KEY=$(echo "$SECRET" | jq -r '.BAMBOOHR_API_KEY')
+BAMBOOHR_SUBDOMAIN=$(echo "$SECRET" | jq -r '.BAMBOOHR_SUBDOMAIN')
+OPENAI_API_KEY=$(echo "$SECRET" | jq -r '.OPENAI_API_KEY')
+
+aws ecr get-login-password --region "$REGION" \
+  | docker login --username AWS --password-stdin \
+    "${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+
+docker pull "$ECR_IMAGE"
+
+docker run --rm \
+  -e BAMBOOHR_API_KEY="$BAMBOOHR_API_KEY" \
+  -e BAMBOOHR_SUBDOMAIN="$BAMBOOHR_SUBDOMAIN" \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e LIVE_MODE="true" \
+  -v /opt/screener/config.yaml:/app/config.yaml:ro \
+  "$ECR_IMAGE"
+RUNSCRIPT
+
+chmod +x /opt/screener/run.sh
+
+# Install crontab (runs as root — docker socket access)
+echo "${cron_schedule} root /opt/screener/run.sh >> /var/log/screener.log 2>&1" \
+  > /etc/cron.d/bamboohr-screener
+chmod 0644 /etc/cron.d/bamboohr-screener
+```
+
+**config.yaml delivery:** The config file at `/opt/screener/config.yaml` needs to be on the
+instance. Two options:
+- Store in S3, download in `user_data` via `aws s3 cp` (recommended — config is not a secret,
+  S3 is durable, and updates don't require reprovisioning the instance)
+- Embed in `user_data` via Terraform `templatefile` (simpler but requires `terraform apply` to
+  update config)
+
+For v1.1, embedding in `user_data` is acceptable. For a production follow-up, S3 delivery is
+cleaner because config can be updated without touching Terraform.
+
+### AMI Selection
+
+Use Amazon Linux 2023 (AL2023). It includes Docker and AWS CLI v2 in the package manager,
+receives security patches, and is the current AWS default. Use a `data` source to pin to the
+latest AL2023 AMI rather than hardcoding an AMI ID (which goes stale).
+
+```hcl
+data "aws_ami" "amazon_linux_2023" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["al2023-ami-2023*-x86_64"]
+  }
+}
+```
+
+### Instance Type
+
+`t3.micro` (2 vCPU burstable, 1 GiB RAM). The screener container runs for a few minutes and
+exits — it does not need sustained CPU. t3.micro costs ~$8/month. If the account is within the
+AWS Free Tier window, `t2.micro` qualifies for 750 hours/month free.
+
+### ECR Repository
+
+```hcl
+resource "aws_ecr_repository" "screener" {
+  name                 = "bamboohr-screener"
+  image_tag_mutability = "MUTABLE"  # allows :latest re-tagging
+
+  image_scanning_configuration {
+    scan_on_push = true
   }
 }
 
-if (errorCount > 0) {
-  logger.warn({ event: "run_complete_with_errors", errorCount });
-  process.exit(1); // Non-zero exit signals cron/monitoring that review is needed
+resource "aws_ecr_lifecycle_policy" "screener" {
+  repository = aws_ecr_repository.screener.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 5 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 5
+      }
+      action = { type = "expire" }
+    }]
+  })
 }
 ```
 
-**Fatal vs. recoverable errors:**
+---
 
-| Error | Handling |
-|-------|---------|
-| Config validation fails | `process.exit(1)` immediately — no partial run |
-| BambooHR auth fails (401) | `process.exit(1)` — credential issue, nothing to process |
-| BambooHR 429 rate limit | Retry once after 60s delay, then log error and skip candidate |
-| PDF download fails | Tool returns "No CV available", agent continues |
-| Agent run throws | Caught per-candidate, logged, continue to next |
-| Agent returns ambiguous output | Parse failure → log error, skip candidate (do NOT write unknown state to BambooHR) |
+## Part 5: Deploy Script Design
 
-### 6. Idempotency
+Three operations are needed: build, push to ECR, and trigger the EC2 instance to pull and run.
+These can be a single `deploy.sh` or separate scripts.
 
-The container is short-lived and cron-triggered. Without idempotency, re-running after a partial failure would re-process candidates already moved.
+```bash
+#!/usr/bin/env bash
+# scripts/deploy.sh
+set -euo pipefail
 
-**Strategy: processed.json file on mounted volume**
+AWS_REGION="eu-west-1"
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ECR_REPO="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/bamboohr-screener"
+IMAGE_TAG="${1:-latest}"
 
-```
-/data/processed.json  ← mounted Docker volume, persists between runs
-```
+echo "==> Building image..."
+docker build -t "bamboohr-screener:${IMAGE_TAG}" .
 
-```typescript
-// idempotency.ts
-interface ProcessedStore { processedIds: string[] }
+echo "==> Authenticating to ECR..."
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin \
+    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-export async function isProcessed(id: string, storePath: string): Promise<boolean> {
-  try {
-    const store: ProcessedStore = JSON.parse(await fs.readFile(storePath, "utf8"));
-    return store.processedIds.includes(id);
-  } catch { return false; } // file doesn't exist yet = nothing processed
-}
+echo "==> Tagging and pushing..."
+docker tag "bamboohr-screener:${IMAGE_TAG}" "${ECR_REPO}:${IMAGE_TAG}"
+docker push "${ECR_REPO}:${IMAGE_TAG}"
 
-export async function markProcessed(id: string, storePath: string): Promise<void> {
-  let store: ProcessedStore = { processedIds: [] };
-  try { store = JSON.parse(await fs.readFile(storePath, "utf8")); } catch {}
-  store.processedIds.push(id);
-  await fs.writeFile(storePath, JSON.stringify(store, null, 2));
-}
+if [ "$IMAGE_TAG" != "latest" ]; then
+  docker tag "bamboohr-screener:${IMAGE_TAG}" "${ECR_REPO}:latest"
+  docker push "${ECR_REPO}:latest"
+fi
+
+echo "==> Done. EC2 will pull :latest on next cron trigger."
+echo "    To run immediately: use SSM Session Manager to trigger run.sh manually."
 ```
 
-**Why file-based and not BambooHR stage check:** Stage-based idempotency (skip if candidate is no longer in "New") is cleaner but requires an extra API call per candidate to re-fetch stage. File-based is free and explicit. Both can coexist: check file first (fast), verify stage second if the file check passes.
+The EC2 instance always pulls `:latest` at cron time (`docker pull` is at the top of `run.sh`),
+so a new image is picked up on the next scheduled run automatically. No SSH or `docker restart`
+needed.
+
+For an immediate out-of-cycle run, use SSM Run Command (no SSH key needed):
+```bash
+aws ssm send-command \
+  --instance-ids "i-0123456789abcdef0" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["/opt/screener/run.sh"]'
+```
 
 ---
 
-## Anti-Patterns
+## Part 6: Suggested Build Order for v1.1 Phases
 
-### Anti-Pattern 1: Single Agent Run for All Candidates
+The three feature areas have dependencies. The correct order avoids rework:
 
-**What people do:** Pass the full list of candidates as one big prompt to a single agent run.
+### Phase 6: Multi-Job Config + Pipeline (no AWS dependency)
 
-**Why it's wrong:** Context window fills up fast. If one candidate causes a tool error, the entire run fails. Reasoning quality degrades when the agent juggles 20 candidates simultaneously. Output parsing becomes fragile.
+Build first because it is pure TypeScript with no external infrastructure dependency. Can be
+tested locally with the existing Docker setup.
 
-**Do this instead:** One `run(agent, candidateContext)` call per candidate. Sequential, isolated, easy to debug.
+**Steps:**
+1. Update `configSchema` in `schema.ts` — `jobs: z.array(jobConfigSchema).min(1)`
+2. Update `loadConfig()` — no logic change, just type updates cascade from schema
+3. Update `CandidateProcessor` — change constructor from `Config` to `JobConfig`
+4. Update `ScreeningPipeline` — add outer `for...of config.jobs` loop, extract `runJob(jobConfig)`
+5. Update `index.ts` — constructs one `ScreeningPipeline` with full `Config`; no change needed
+   if Option A (outer loop in pipeline) is chosen
+6. Migrate `config.yaml` and `config.example.yaml` to new `jobs:` array format
+7. Update all tests (unit tests for `CandidateProcessor` and `ScreeningPipeline` need type updates)
+8. Manual dry-run test with two-job config
 
----
+**What does NOT change:** `CandidateProcessor.process()` logic, `SoftEvaluator`, `BambooHRClient`,
+`LiveModeWriter`, `CommentBuilder`, `HardRulesEvaluator`, `JsonLogger`. The pipeline logic is
+unchanged — only the wiring and config shape change.
 
-### Anti-Pattern 2: Rules Engine as a Separate Agent or Tool
+### Phase 7: Terraform Infrastructure (depends on Phase 6 image being stable)
 
-**What people do:** Create a "rules evaluator" agent that the screening agent calls as a sub-agent.
+Build second because Terraform provisions infrastructure that assumes the image works. Provision
+with an image tag before writing deploy scripts.
 
-**Why it's wrong:** Unnecessary complexity for this scale. Hard rules are pure functions. Soft rules are just instructions in the prompt. Adding a second agent adds latency, cost, and a new failure point.
+**Steps:**
+1. Create `terraform/` directory with `main.tf`, `variables.tf`, `outputs.tf`
+2. Implement resources in order of dependency:
+   - Data sources: `aws_caller_identity`, `aws_ami`, `aws_vpc` (default)
+   - `aws_secretsmanager_secret` + `aws_secretsmanager_secret_version`
+   - `aws_ecr_repository` + `aws_ecr_lifecycle_policy`
+   - `aws_iam_role` + `aws_iam_role_policy` + `aws_iam_instance_profile`
+   - `aws_security_group`
+   - `aws_instance` with `user_data`
+3. `terraform init && terraform plan` — review before apply
+4. `terraform apply` — provisions infrastructure
+5. Manually push an image to ECR, SSH via SSM to verify `run.sh` executes correctly
 
-**Do this instead:** Hard rules as a plain function pre-filter. Soft rules as system prompt context.
+### Phase 8: Deploy Scripts + Cron Verification (depends on Phase 7 infrastructure existing)
 
----
+Build last because deploy scripts need a real ECR URL and a running EC2 instance.
 
-### Anti-Pattern 3: Storing State in Agent Memory Between Candidates
+**Steps:**
+1. Write `scripts/deploy.sh` (build + tag + push + optional immediate trigger)
+2. Test full deploy flow: `npm run build → docker build → deploy.sh`
+3. Trigger `run.sh` via SSM Run Command — verify logs, verify BambooHR stage moves in dry-run
+4. Enable cron by verifying `/etc/cron.d/bamboohr-screener` is installed and fires at schedule
+5. Verify `LIVE_MODE=true` path end-to-end before sign-off
 
-**What people do:** Reuse the same `run()` continuation across candidates, hoping the agent "remembers" previous decisions.
+### Dependency Graph
 
-**Why it's wrong:** OpenAI Agents SDK `run()` contexts are not designed for cross-candidate state. This would pollute the context window and produce inconsistent decisions based on candidate ordering.
+```
+Phase 6 (Multi-job TypeScript)
+    │
+    │  (Phase 6 complete → Docker image with multi-job support built)
+    │
+    ▼
+Phase 7 (Terraform)
+    │
+    │  (Phase 7 complete → ECR repo exists, EC2 running, IAM wired)
+    │
+    ▼
+Phase 8 (Deploy scripts + cron verification)
+```
 
-**Do this instead:** Fresh `run()` call per candidate. The agent constructs its own context by calling tools.
-
----
-
-### Anti-Pattern 4: Writing to BambooHR Before Agent Confirms
-
-**What people do:** Optimistically move the stage, then run the agent to get the comment.
-
-**Why it's wrong:** If the agent fails mid-run, the candidate is in the wrong stage with no comment. Recruiters see a moved candidate with no explanation.
-
-**Do this instead:** The move-stage and add-comment operations are inside the tool's `execute` function. The agent only calls the tool when it has a decision and a comment ready. Both operations happen atomically within the tool.
-
----
-
-### Anti-Pattern 5: Trusting Agent Output Strings Blindly
-
-**What people do:** Let the agent return `"PASS"` or `"REJECT"` as a string and parse it with `.includes()`.
-
-**Why it's wrong:** LLMs produce inconsistent output formats. Parsing breaks silently.
-
-**Do this instead:** The agent's action is the tool call itself. The agent's final text output is not the decision — the tool execution is. This is the correct use of tool-based agents: the tool call IS the side effect, not the text output.
-
----
-
-## Integration Points
-
-### External Services
-
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| BambooHR REST API | HTTP client with `Authorization: Basic base64(apikey:x)` header | API key is `apikey`, password is literal `"x"`. Rate limit ~100 req/min. No official SDK for Node — use raw fetch. |
-| OpenAI API | Via `@openai/agents` `run()` | SDK handles streaming, retries, tool call loop. Do not call OpenAI API directly. |
-| Docker volume | File system read/write at `/data/` | Mounted at runtime. Code uses configurable path via env var `DATA_DIR` defaulting to `/data`. |
-
-### Internal Boundaries
-
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| `index.ts` ↔ `agent/runner.ts` | Direct function call, passes `AppConfig` and `Candidate` | Runner returns `ScreeningResult` — a plain typed object |
-| `agent/tools.ts` ↔ `bamboohr/client.ts` | Factory pattern — tools close over client instance | Never import BambooHR client directly into tools; receive via `buildTools(client)` |
-| `agent/tools.ts` ↔ `pdf/extractor.ts` | Factory pattern — same as above | `buildTools(client, pdfExtractor)` |
-| `config/loader.ts` ↔ rest of system | One-way: load once, pass down explicitly | No global config object. Every module that needs config receives it as a parameter. |
-| `idempotency.ts` ↔ `index.ts` | Direct calls at two points: check before agent run, mark after success | Path to `processed.json` comes from env var `DATA_DIR` |
-
----
-
-## Suggested Build Order
-
-Build in this order to validate integration at each step before adding complexity:
-
-1. **Config loader** — `config/schema.ts` + `config/loader.ts`. Validate YAML parsing works and Zod catches bad config. No external dependencies. Can test immediately.
-
-2. **BambooHR client** — `bamboohr/client.ts` + `bamboohr/types.ts`. Get `listCandidates()` working against real API. This validates credentials and API shape before any agent work.
-
-3. **Hard rules evaluator** — `src/hardRules.ts`. Pure function, no external deps. Write unit tests. This is your cheapest screening path.
-
-4. **PDF extractor** — `pdf/extractor.ts`. Validate `pdf-parse` works with a real BambooHR CV attachment URL.
-
-5. **Agent tools** — `agent/tools.ts` using the already-tested BambooHR client and PDF extractor.
-
-6. **System prompt builder** — `agent/prompt.ts`. Output the prompt to stdout and review it manually before connecting to LLM.
-
-7. **Agent + runner** — `agent/agent.ts` + `agent/runner.ts`. Wire up the `@openai/agents` `Agent` and `run()`. Test with a single candidate.
-
-8. **Idempotency** — `idempotency.ts`. Add after single-candidate flow works end-to-end.
-
-9. **Main orchestrator** — `index.ts`. Wire all components together, add per-candidate error isolation, exit codes.
-
-10. **Docker packaging** — `Dockerfile` + `docker-compose.yml`. Validate volume mounting for config and data.
+Phase 6 and Phase 7 can be planned in parallel (plans written simultaneously) but Phase 7
+execution requires Phase 6 to be complete so a valid image can be pushed and tested.
 
 ---
 
-## Scaling Considerations
+## Component Boundary Summary (v1.1)
 
-This is a batch tool, not a web service. Scaling questions are about batch throughput, not concurrent users.
+```
+src/index.ts
+    └── loadConfig() → Config { jobs: JobConfig[] }
+    └── constructs shared: BambooHRClient, SoftEvaluator, JsonLogger
+    └── constructs ScreeningPipeline(client, processor, logger, config, dryRun)
+    └── pipeline.run()
 
-| Scale | Architecture Adjustment |
-|-------|------------------------|
-| 1–20 candidates/day | Sequential processing, current architecture — no changes needed |
-| 20–200 candidates/day | Add `p-limit` concurrency control (e.g., 3 parallel agent runs). BambooHR rate limits will become the constraint first. |
-| 200+ candidates/day | Sequential becomes impractical. Move to parallel fan-out with controlled concurrency. Consider BambooHR API quotas carefully. |
-| Multiple job openings | Config supports array of jobs; `index.ts` iterates over jobs then candidates. No architectural change needed. |
+src/screener/screening-pipeline.ts
+    └── for each JobConfig in config.jobs:
+            └── validateStages(jobConfig) → stageMap
+            └── fetchCandidates(jobConfig.openingId, intakeId)
+            └── for each application:
+                    └── candidateProcessor.process(application, stageMap)
+                        [candidateProcessor needs JobConfig, not full Config]
 
-**First bottleneck:** PDF download latency (1–5 seconds per CV). Not a problem at 20 candidates; becomes relevant at 100+. Solution: pre-fetch all PDFs in parallel before starting agent runs.
+src/pipeline/candidate-processor.ts
+    └── config: JobConfig  ← type change only
+    └── all logic unchanged
+
+src/config/schema.ts
+    └── jobConfigSchema  ← new, extracted from current configSchema
+    └── configSchema     ← now wraps jobs: z.array(jobConfigSchema).min(1)
+
+terraform/
+    └── ECR repo
+    └── Secrets Manager secret
+    └── IAM role + policy + instance profile
+    └── Security group
+    └── EC2 instance (user_data installs Docker, writes run.sh, sets cron)
+
+scripts/
+    └── deploy.sh  ← build, push to ECR, tag :latest
+```
+
+---
+
+## Risks and Mitigations
+
+| Risk | Likelihood | Consequence | Mitigation |
+|------|-----------|-------------|------------|
+| Breaking YAML change breaks existing config | HIGH | Container fails to start | Include config migration in Phase 6 plan; update `config.example.yaml` and document migration |
+| `user_data` script fails silently on first boot | MEDIUM | Cron never installs; no error visible | Check `/var/log/cloud-init-output.log` via SSM; add `set -euo pipefail` to user_data |
+| ECR authentication expires during long run | LOW | `docker pull` fails | The run script re-authenticates at the top of every invocation — token is fresh each time |
+| Secrets Manager returns stale cached value | LOW | Old credential used | Secrets Manager has no client-side caching in this pattern — `get-secret-value` always fetches live |
+| Per-job stage validation fails for one job | MEDIUM | Entire run aborts | Option: catch `StageValidationError` per job in the outer loop and continue to next job, logging the error |
+| Two jobs share same BambooHR opening + different stages | LOW | Stage conflict | Enforce `openingId` uniqueness across jobs in Zod schema with `.superRefine()` |
 
 ---
 
 ## Sources
 
-- OpenAI Agents SDK TypeScript documentation (training knowledge through August 2025) — MEDIUM confidence. SDK was in active development; verify tool definition API and `run()` signature against current `@openai/agents` package docs.
-- BambooHR API v1 documentation (training knowledge) — MEDIUM confidence. Endpoint paths and auth pattern are stable; verify specific ATS endpoint URLs against `documentation.bamboohr.com`.
-- `pdf-parse` npm package patterns — HIGH confidence. Stable, widely used, well-understood interface.
-- Idempotency patterns for cron batch jobs — HIGH confidence. Standard pattern.
+- Terraform Registry: `aws_iam_instance_profile`, `aws_iam_role`, `aws_ecr_repository`,
+  `aws_ecr_lifecycle_policy`, `aws_instance` — MEDIUM confidence (verified resource names via
+  web search against registry.terraform.io)
+- AWS documentation: Secrets Manager `get-secret-value` CLI pattern, EC2 instance profile
+  IAM pattern — MEDIUM confidence (patterns confirmed via AWS re:Post and AWS blog)
+- Existing codebase: `src/config/schema.ts`, `src/screener/screening-pipeline.ts`,
+  `src/pipeline/candidate-processor.ts`, `src/index.ts`, `Dockerfile` — HIGH confidence
+  (code read directly)
+- SSM Parameter Store vs Secrets Manager comparison — MEDIUM confidence (multiple consistent
+  sources: tutorialsdojo.com, cloudonaut.io, ranthebuilder.cloud)
 
 ---
-*Architecture research for: BambooHR Candidate Screener (TypeScript, OpenAI Agents SDK)*
-*Researched: 2026-05-01*
+*Architecture research for: BambooHR Candidate Screener v1.1 — Multi-Job & AWS Deployment*
+*Researched: 2026-05-04*
