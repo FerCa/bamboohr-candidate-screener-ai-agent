@@ -22,6 +22,27 @@ export function loadConfig(configPath: string): Config {
     );
   }
 
+  // Step 1b: Backward-compatible normalization — legacy single-job shape → jobs array (D-02, CONF-07)
+  // Detects `job:` key without `jobs:` key and silently promotes to multi-job array.
+  // No warning emitted — the internal Config type always uses the normalized shape.
+  if (
+    raw !== null &&
+    typeof raw === 'object' &&
+    'job' in raw &&
+    !('jobs' in raw)
+  ) {
+    const r = raw as Record<string, unknown>;
+    raw = {
+      jobs: [{
+        openingId: (r['job'] as Record<string, unknown>)['openingId'],
+        stages:    (r['job'] as Record<string, unknown>)['stages'],
+        hardRules: r['hardRules'],
+        fieldMap:  r['fieldMap'],
+        softRules: r['softRules'],
+      }],
+    };
+  }
+
   // Step 2: Validate schema with Zod safeParse
   const result = configSchema.safeParse(raw);
   if (!result.success) {
