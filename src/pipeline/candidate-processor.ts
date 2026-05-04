@@ -10,7 +10,7 @@
 import type { IBambooHRClient } from '../interfaces/IBambooHRClient.js';
 import type { ISoftEvaluator } from '../interfaces/ISoftEvaluator.js';
 import type { ILogger } from '../interfaces/ILogger.js';
-import type { Config } from '../config/schema.js';
+import type { JobConfig } from '../config/schema.js';
 import type { BambooHRApplication } from '../bamboohr/types.js';
 import type { EvaluationResult } from '../agent/types.js';
 import { evaluateHardRules } from '../rules/evaluator.js';
@@ -26,7 +26,7 @@ export class CandidateProcessor {
     private readonly softEvaluator: ISoftEvaluator,
     private readonly logger: ILogger,
     private readonly liveWriter: LiveModeWriter,
-    private readonly config: Config,
+    private readonly job: JobConfig,
     private readonly dryRun: boolean,
   ) {}
 
@@ -43,7 +43,7 @@ export class CandidateProcessor {
       application.id,
     );
 
-    const hardRuleResult = evaluateHardRules(this.config, applicationDetail);
+    const hardRuleResult = evaluateHardRules(this.job, applicationDetail);
 
     if (hardRuleResult.outcome === 'fail') {
       // --- Path E: hard-rule fail ---
@@ -56,7 +56,7 @@ export class CandidateProcessor {
       });
 
       if (!this.dryRun) {
-        const failStageId = this.resolveStageId(stageMap, this.config.job.stages.fail);
+        const failStageId = this.resolveStageId(stageMap, this.job.stages.fail);
         await this.liveWriter.write(
           applicationDetail.id,
           CommentBuilder.hardRuleFail(hardRuleResult.reasons),
@@ -88,7 +88,7 @@ export class CandidateProcessor {
       });
 
       if (!this.dryRun) {
-        const reviewedStageId = this.resolveStageId(stageMap, this.config.job.stages.fail);
+        const reviewedStageId = this.resolveStageId(stageMap, this.job.stages.fail);
         await this.liveWriter.write(
           applicationDetail.id,
           CommentBuilder.needsReview(candidateContext.needsReviewReason),
@@ -115,7 +115,7 @@ export class CandidateProcessor {
     } else {
       evalResult = await this.softEvaluator.evaluate(
         candidateContext,
-        this.config.softRules,
+        this.job.softRules,
       );
     }
 
@@ -125,8 +125,8 @@ export class CandidateProcessor {
       // D-01 (Phase 4): 'fail' AND 'needsReview' both go to the fail/reviewed stage.
       const targetStageName =
         evalResult.outcome === 'pass'
-          ? this.config.job.stages.pass
-          : this.config.job.stages.fail;
+          ? this.job.stages.pass
+          : this.job.stages.fail;
       const targetStageId = this.resolveStageId(stageMap, targetStageName);
       await this.liveWriter.write(
         evalResult.applicationId,
