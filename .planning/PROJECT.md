@@ -1,8 +1,17 @@
 # BambooHR Candidate Screener
 
+## Current Milestone: v1.1 — Multi-Job & AWS Deployment
+
+**Goal:** Extend the screener to handle multiple job openings simultaneously and provide a production-ready AWS deployment path via Terraform + EC2.
+
+**Target features:**
+- Multi-job support: screen N configured job openings per run, each with its own rules, stages, and pass/fail criteria
+- AWS deployment: Terraform config to provision an EC2 instance with Docker, cron, and secrets management
+- Deploy scripts: build, push, and update the running instance without manual SSH steps
+
 ## What This Is
 
-An automated daily screening agent built with OpenAI Agents SDK (TypeScript) that monitors a BambooHR job opening for new candidates, evaluates them against configurable rules, and moves them to the appropriate pipeline stage with a written comment explaining the decision. Runs as a short-lived Docker container triggered by cron — locally first, portable to a server.
+An automated daily screening agent built with OpenAI Agents SDK (TypeScript) that monitors BambooHR job openings for new candidates, evaluates them against configurable rules, and moves them to the appropriate pipeline stage with a written comment explaining the decision. Runs as a short-lived Docker container triggered by cron — locally or on AWS EC2.
 
 ## Core Value
 
@@ -29,7 +38,6 @@ Eliminate manual first-pass screening: recruiters only see candidates who alread
 
 ### Out of Scope
 
-- Multi-job monitoring — v2 when single-job is proven
 - Slack/email run summaries — stdout logs sufficient for now
 - Web UI for rule management — YAML config is good enough
 - Automatic rule learning from past decisions — manual rule refinement only
@@ -48,7 +56,7 @@ Eliminate manual first-pass screening: recruiters only see candidates who alread
 - **Runtime**: Docker container, must be short-lived (run-and-exit pattern)
 - **Config**: Rules and job config in YAML file, mounted as Docker volume — no hardcoded rules
 - **Credentials**: BambooHR API key + subdomain, OpenAI API key — all via env vars, never in code
-- **Deployment target**: Local MacBook first; must be portable to a Linux server without code changes
+- **Deployment target**: Local MacBook + AWS EC2 via Terraform; container runs identically in both environments
 
 ## Key Decisions
 
@@ -60,7 +68,7 @@ Eliminate manual first-pass screening: recruiters only see candidates who alread
 | One job opening first | Validate approach before generalizing rule management | — Pending |
 
 ---
-*Last updated: 2026-05-03 — Phase 5 complete — Clean Code & SOLID refactor complete*
+*Last updated: 2026-05-04 — Milestone v1.1 started — Multi-Job & AWS Deployment*
 
 ## Evolution
 
