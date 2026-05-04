@@ -1,8 +1,8 @@
 # Requirements
 
 **Project:** BambooHR Candidate Screening Agent
-**Version:** v1
-**Date:** 2026-05-01
+**Version:** v1.1
+**Date:** 2026-05-04
 
 ---
 
@@ -47,16 +47,44 @@
 
 ---
 
+## v1.1 Requirements
+
+### Multi-Job Config
+
+- [ ] **CONF-06**: `config.yaml` supports a `jobs` array; each entry has its own `openingId`, `stages`, `hardRules`, `fieldMap`, and `softRules`
+- [ ] **CONF-07**: existing single-job `config.yaml` remains valid — loader normalizes it to a single-item jobs array internally (backward-compatible migration)
+
+### Multi-Job Pipeline
+
+- [ ] **MULTI-01**: system iterates over all enabled jobs sequentially in a single container run; each job runs the full pipeline independently with its own stage validation, candidate fetch, and write path
+- [ ] **MULTI-02**: a failure in one job (stage mismatch, API error) is isolated and logged; remaining jobs continue processing
+- [ ] **MULTI-03**: the final JSON summary includes per-job counts as well as aggregate totals
+
+### Safety
+
+- [ ] **SAFE-03**: system creates a lock file at run start and removes it on exit; if a lock file younger than 4 hours exists, the run exits immediately — prevents double-processing on cron overlap
+
+### AWS Infrastructure
+
+- [ ] **INFRA-06**: Terraform provisions all required AWS resources: ECR repository, t3.micro EC2 instance, IAM role with minimal permissions (ECR read + SSM Parameter Store get), egress-only security group, and SSM Parameter Store SecureString entries for secrets
+- [ ] **INFRA-07**: EC2 instance bootstraps via `user_data`: installs Docker and ECR credential helper, writes cron wrapper script, registers daily cron job — no SSH access required; `user_data_replace_on_change = true` enforced
+- [ ] **INFRA-08**: secrets (`BAMBOOHR_API_KEY`, `BAMBOOHR_SUBDOMAIN`, `OPENAI_API_KEY`, `LIVE_MODE`) are stored as SSM Parameter Store SecureString values; never appear in Terraform state or on disk on the instance
+- [ ] **INFRA-11**: all Terraform resources use configurable input variables for names, region, and path prefixes; no AWS account IDs, company names, or environment-specific values are hardcoded in committed files; `terraform.tfvars` is gitignored
+
+### Deploy Scripts
+
+- [ ] **INFRA-09**: `scripts/deploy.sh` builds the Docker image, tags with git SHA + `latest`, and pushes to ECR — runnable from a developer's Mac with no manual SSH steps; ECR URL derived from Terraform output, not hardcoded
+- [ ] **INFRA-10**: EC2 cron wrapper script fetches secrets from SSM at each invocation and passes them as env vars to `docker run`; no secrets written to disk at any point
+
+---
+
 ## v2 Requirements
 
-> These were deferred from v1. Implement after v1 is validated on real data.
+> These were deferred from v1. Implement after v1.1 is shipped.
 
-- [ ] **SAFE-03**: Idempotency guard — system tracks processed candidate IDs in a `processed.json` file on the mounted Docker volume; already-processed candidates are skipped on re-runs
-  > ⚠️ **Strongly recommended for early v1.x** — research flagged this as the #1 pitfall. Without it, any re-run (retry, cron overlap, manual trigger) causes double-comments and double-moves. ~10 lines of code.
 - [ ] **SAFE-04**: Every GPT-4o structured response is validated with a Zod schema; parse failures trigger the "Needs Human Review" outcome rather than a crash
 - [ ] **PDF-03**: After extraction, if word count < 50 and file size > 50 KB, system flags the candidate as "Needs Human Review" (image-only/scanned PDF) without calling GPT-4o
 - [ ] **BAMB-05**: Exponential backoff retry (3 attempts) on BambooHR 429 and 5xx responses
-- [ ] **CONF-05**: Per-job configuration — support monitoring multiple job openings, each with its own rule set
 - [ ] **INFRA-05**: Slack webhook notification posting a run summary after each execution
 
 ---
@@ -105,3 +133,15 @@
 | INFRA-01 | Phase 4 | Pending |
 | INFRA-03 | Phase 4 | Pending |
 | INFRA-04 | Phase 4 | Pending |
+| CONF-06 | Phase 6 (v1.1) | Pending |
+| CONF-07 | Phase 6 (v1.1) | Pending |
+| SAFE-03 | Phase 6 (v1.1) | Pending |
+| MULTI-01 | Phase 6 (v1.1) | Pending |
+| MULTI-02 | Phase 6 (v1.1) | Pending |
+| MULTI-03 | Phase 6 (v1.1) | Pending |
+| INFRA-06 | Phase 7 (v1.1) | Pending |
+| INFRA-07 | Phase 7 (v1.1) | Pending |
+| INFRA-08 | Phase 7 (v1.1) | Pending |
+| INFRA-11 | Phase 7 (v1.1) | Pending |
+| INFRA-09 | Phase 8 (v1.1) | Pending |
+| INFRA-10 | Phase 8 (v1.1) | Pending |
