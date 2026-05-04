@@ -8,7 +8,7 @@ import { LiveModeWriter } from '../pipeline/live-mode-writer.js';
 import type { IBambooHRClient } from '../interfaces/IBambooHRClient.js';
 import type { ISoftEvaluator } from '../interfaces/ISoftEvaluator.js';
 import type { ILogger } from '../interfaces/ILogger.js';
-import type { Config } from '../config/schema.js';
+import type { JobConfig } from '../config/schema.js';
 import type { BambooHRApplication } from '../bamboohr/types.js';
 import type { EvaluationResult } from '../agent/types.js';
 import type { CandidateContext } from '../pipeline/types.js';
@@ -19,14 +19,12 @@ vi.mock('../pipeline/extract-cv.js', () => ({
 }));
 
 /**
- * Build a default config that passes Zod validation and lets all rule branches be exercised.
+ * Build a default JobConfig (per-job slice) for tests.
  */
-function makeConfig(): Config {
+function makeConfig(): JobConfig {
   return {
-    job: {
-      openingId: 'job-1',
-      stages: { intake: 'New', pass: 'Schedule Phone Screen', fail: 'Reviewed' },
-    },
+    openingId: 'job-1',
+    stages: { intake: 'New', pass: 'Schedule Phone Screen', fail: 'Reviewed' },
     hardRules: {
       maxSalary: { value: 100000, label: 'Salary above ceiling' },
     },
@@ -35,7 +33,7 @@ function makeConfig(): Config {
       required: [{ label: 'Years of experience', description: '5+ years' }],
       optional: [],
     },
-  } as Config;
+  };
 }
 
 function makeApplication(extra: Partial<BambooHRApplication> = {}): BambooHRApplication {
