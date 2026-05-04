@@ -186,7 +186,7 @@ Cross-cutting constraints: zero `any` casts in production code; `process.exit` e
 Plans:
 
 **Wave 1**
-- [ ] 06-01-PLAN.md — Config schema + loader + types: jobEntrySchema, JobConfig type, configSchema (jobs array), backward-compatible normalization in loadConfig() (CONF-06, CONF-07)
+- [x] 06-01-PLAN.md — Config schema + loader + types: jobEntrySchema, JobConfig type, configSchema (jobs array), backward-compatible normalization in loadConfig() (CONF-06, CONF-07)
 
 **Wave 2** *(parallel — no shared files; both depend only on Plan 01)*
 - [ ] 06-02-PLAN.md — Create job-runner.ts (ScreeningPipeline → JobRunner rename, JobConfig slice, JobResult return type); update IBambooHRClient.validateStages + BambooHRClient.validateStages to accept JobConfig (MULTI-01, MULTI-02)
