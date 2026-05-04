@@ -1,11 +1,11 @@
 // src/index.ts
-// Entry point for the BambooHR Candidate Screener (post-Phase-5 thin wiring).
+// Entry point for the BambooHR Candidate Screener (post-Phase-6 thin wiring).
 // Responsibilities (D-01):
 //   1. Load .env (dotenv MUST be the first import — loads before any env var read).
 //   2. Load + validate config (throws ConfigError on failure — D-08, D-09).
 //   3. Read credentials from env vars (CONF-03 — never from config).
 //   4. Construct injected dependencies (Phase-5 success criterion #3).
-//   5. Hand off to ScreeningPipeline.run().
+//   5. Hand off to MultiJobOrchestrator.run().
 //   6. Catch named errors at the top level — single allowed process.exit point (D-08).
 
 // dotenv/config MUST be the first import — it loads .env BEFORE any env var reads
@@ -18,8 +18,7 @@ import { StageValidationError } from './bamboohr/errors.js';
 import { JsonLogger } from './logger/logger.js';
 import { SoftEvaluator } from './agent/evaluator.js';
 import { LiveModeWriter } from './pipeline/live-mode-writer.js';
-import { CandidateProcessor } from './pipeline/candidate-processor.js';
-import { ScreeningPipeline } from './screener/screening-pipeline.js';
+import { MultiJobOrchestrator } from './screener/multi-job-orchestrator.js';
 
 async function main(): Promise<void> {
   // CONF-01: loadConfig throws ConfigError on YAML or schema failure (D-08)
@@ -52,7 +51,7 @@ async function main(): Promise<void> {
   const jsonLogger = new JsonLogger();
   const liveWriter = new LiveModeWriter(bambooHrClient);
   const dryRun = isDryRun();
-  const candidateProcessor = new CandidateProcessor(
+  const orchestrator = new MultiJobOrchestrator(
     bambooHrClient,
     softEvaluator,
     jsonLogger,
@@ -60,15 +59,8 @@ async function main(): Promise<void> {
     config,
     dryRun,
   );
-  const pipeline = new ScreeningPipeline(
-    bambooHrClient,
-    candidateProcessor,
-    jsonLogger,
-    config,
-    dryRun,
-  );
 
-  await pipeline.run();
+  await orchestrator.run();
 }
 
 main().catch((err) => {
